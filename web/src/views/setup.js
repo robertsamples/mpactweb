@@ -10,6 +10,7 @@
 import { registerView, watchRun } from '../app.js';
 import { api } from '../api.js';
 import { store } from '../state.js';
+import { collapsible } from '../components.js';
 import { $, bytes, checkbox, clear, debounce, el, field, numberInput, select, timeAgo, toast } from '../util.js';
 
 const SLOTS = [
@@ -60,10 +61,10 @@ function slotDetail(record) {
   const node = el('div', { class: 'meta', text: parts.join(' · ') });
   if (detail.missing_columns && detail.missing_columns.length) {
     node.append(el('span', { class: 'bad',
-                             text: ` — missing required column(s): ${detail.missing_columns.join(', ')}` }));
+                             text: `  missing required column(s): ${detail.missing_columns.join(', ')}` }));
   }
   if (detail.format === 'unknown') {
-    node.append(el('span', { class: 'bad', text: ' — unrecognised peak-table format' }));
+    node.append(el('span', { class: 'bad', text: '  unrecognised peak-table format' }));
   }
   return node;
 }
@@ -208,6 +209,102 @@ const deriveGroups = debounce(async () => {
   refreshRun();
 }, 200);
 
+/** Open a saved ``.mpct``: the desktop's File > Open.
+ *
+ * A save file carries its own copies of all four inputs alongside every
+ * parameter, so this restores a whole analysis -- files, filters, statistics
+ * groups and Plot Feature Sets -- in one step, and it can then be edited and
+ * re-run like anything else rather than only replayed. */
+function sessionPanel() {
+  const status = el('div', { class: 'session-status' });
+
+  const input = el('input', {
+    type: 'file', accept: '.mpct,.mpact', style: { display: 'none' },
+    on: {
+      change: (event) => {
+        const file = event.target.files[0];
+        event.target.value = '';
+        if (file) openSession(file);
+      },
+    },
+  });
+
+  const button = el('button', {
+    class: 'btn', text: 'Open session file...',
+    on: { click: () => input.click() },
+  });
+
+  async function openSession(file) {
+    button.disabled = true;
+    clear(status).append(el('p', { class: 'muted', text: `Reading ${file.name}...` }));
+    try {
+      const body = await api.importSession(file);
+
+      // Library: the imported records first, then whatever was already there.
+      const merged = [...body.files];
+      for (const existing of store.get('files')) {
+        if (!body.files.some((record) => record.id === existing.id)) merged.push(existing);
+      }
+
+      // The session defines the whole input set, so slots it does not name
+      // are cleared rather than left pointing at the previous dataset.
+      const inputs = { peaktable: null, samplelist: null, metadata: null,
+                       fragments: null, ...body.inputs };
+
+      // Feature sets live beside the settings in the store; the run request
+      // puts them back together.
+      const { groupsets = [], ...restored } = body.settings;
+
+      store.set({ files: merged, inputs, settings: restored, groupsets,
+                  selectedGroupset: groupsets.length ? 0 : -1 });
+      store.persistSetup();
+
+      refreshFiles();
+      refreshFiltering();
+      refreshAnalysis();
+      refreshRun();
+      deriveGroups();
+
+      clear(status);
+      for (const warning of body.warnings || []) {
+        status.append(el('div', { class: 'notice warn', text: warning }));
+      }
+      toast(`Opened ${body.name}`, 'ok');
+    } catch (error) {
+      clear(status).append(el('div', { class: 'notice error', text: error.message }));
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  const panel = el('div', { class: 'panel' }, [
+    el('div', { class: 'btn-row', style: { gap: '12px', alignItems: 'baseline' } }, [
+      button,
+      el('span', { class: 'muted',
+                   text: 'Restores the files, filters and settings from a saved '
+                         + 'MPACT session (.mpct), from this app or the desktop one.' }),
+      input,
+    ]),
+    status,
+  ]);
+
+  // Dropping the file on the panel does the same, the way the slots below
+  // accept a dragged file.
+  panel.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    panel.classList.add('dragover');
+  });
+  panel.addEventListener('dragleave', () => panel.classList.remove('dragover'));
+  panel.addEventListener('drop', (event) => {
+    event.preventDefault();
+    panel.classList.remove('dragover');
+    const file = event.dataTransfer.files[0];
+    if (file) openSession(file);
+  });
+
+  return panel;
+}
+
 /** "Try it with an example" -- loads the bundled PTY087I2 dataset into this
  *  session's library and selects it in all four slots. */
 function demoPanel() {
@@ -246,15 +343,22 @@ function demoPanel() {
     }
   });
 
+  // Collapsed by default: one line and a button is all most visitors need,
+  // and the dataset's description shouldn't push the real file pickers down
+  // the page every time.
   return el('div', { class: 'panel' }, [
-    el('h3', {}, [el('span', { text: 'New here?' }),
-                  el('span', { class: 'hint', text: info.name || 'example dataset' })]),
-    el('p', { class: 'muted', style: { maxWidth: '70ch', marginTop: '0' },
-              text: info.summary || '' }),
-    el('div', { class: 'btn-row' }, [
+    el('div', { class: 'btn-row', style: { gap: '12px' } }, [
       button,
-      el('span', { class: 'muted',
-                   text: 'Fills all four slots; you can still change any of them.' }),
+      collapsible({
+        title: 'New here? Load a demo dataset',
+        open: false,
+        body: el('div', {}, [
+          el('p', { class: 'muted', style: { maxWidth: '70ch', margin: '0 0 6px' },
+                    text: info.summary || '' }),
+          el('p', { class: 'muted', style: { margin: '0' },
+                    text: 'Fills all four slots; you can still change any of them.' }),
+        ]),
+      }),
     ]),
   ]);
 }
@@ -272,6 +376,7 @@ function filesView() {
 
     node.append(el('div', { class: 'upload-status' }));
     node.append(demoPanel());
+    node.append(sessionPanel());
 
     const panel = el('div', { class: 'panel' }, [
       el('h3', {}, [el('span', { text: 'Inputs' }),
@@ -358,7 +463,7 @@ function filteringView() {
                  (v) => { updateSetting({ blnkfltr: v }); refreshFiltering(); }),
         field('Blank Code',
               groups.length
-                ? select([['', '— select a group —'], ...groups], s.blnkgrp,
+                ? select([['', 'Select a group...'], ...groups], s.blnkgrp,
                          (v) => updateSetting({ blnkgrp: v }), { disabled: !s.blnkfltr })
                 : el('input', { type: 'text', value: s.blnkgrp || '', disabled: !s.blnkfltr,
                                 placeholder: 'select input files to list groups',
@@ -378,7 +483,8 @@ function filteringView() {
         field(s.blankfilparam === 'relative' ? 'Relative threshold' : 'Absolute threshold',
               numberInput(s.blankfilthresh, (v) => updateSetting({ blankfilthresh: v })),
               s.blankfilparam === 'relative'
-                ? 'fraction of the feature\'s abundance in its most abundant group; 0.05–0.1 is a good start'
+                ? "fraction of the feature's abundance in its most abundant group. "
+                  + '0.01 to 0.1 is a good threshold for presence/absence determination across groups'
                 : 'raw or normalised abundance value'),
       ]),
 
@@ -402,7 +508,7 @@ function filteringView() {
         ]),
         field('CV Threshold', numberInput(s.cvthresh, (v) => updateSetting({ cvthresh: v }),
                                           { disabled: !s.CVfil }),
-              'published thresholds are 0.2–0.3; up to 0.5 for exploratory work'),
+              'published thresholds are 0.2 to 0.3; up to 0.5 for exploratory work'),
         el('p', { class: 'muted',
                   text: 'Median CV is recommended: it is less sensitive to a few very '
                         + 'nonreproducible replicates.' }),
@@ -452,7 +558,7 @@ function groupsetEditor() {
     ]));
   });
   if (!groupsets.length) {
-    list.append(el('li', { class: 'muted', text: 'No feature sets — one will be created for you' }));
+    list.append(el('li', { class: 'muted', text: 'No feature sets; one will be created for you' }));
   }
 
   wrap.append(el('div', { class: 'groupset-list' }, [
@@ -572,34 +678,23 @@ function analysisView() {
 
     node.append(el('div', { class: 'grid cols-2' }, [
       el('div', { class: 'panel' }, [
-        el('h3', { text: 'Calculations' }),
+        el('h3', {}, [el('span', { text: 'Calculations' }),
+                      el('span', { class: 'hint',
+                                   text: 'every plot is generated; these control the statistics' })]),
         checkbox('Fold Change', s.FC, (v) => { updateSetting({ FC: v }); refreshAnalysis(); }),
         checkbox('T test', s.Ttest, (v) => { updateSetting({ Ttest: v }); refreshAnalysis(); }),
         checkbox('FDR Correction', s.FDR, (v) => updateSetting({ FDR: v })),
         field('Experimental Group',
-              select([['', '— select —'], ...groups], s.expgrp,
+              select([['', 'Select...'], ...groups], s.expgrp,
                      (v) => updateSetting({ expgrp: v }),
                      { disabled: !groups.length })),
         field('Control Group',
-              select([['', '— select —'], ...groups], s.ctrgrp,
+              select([['', 'Select...'], ...groups], s.ctrgrp,
                      (v) => updateSetting({ ctrgrp: v }),
                      { disabled: !groups.length })),
         el('p', { class: 'muted',
                   text: 'A volcano plot needs both Fold Change and T test, with an '
                         + 'experimental and a control group selected.' }),
-      ]),
-      el('div', { class: 'panel' }, [
-        el('h3', {}, [el('span', { text: 'Plots' }),
-                      el('span', { class: 'hint', text: 'deselecting these barely changes runtime' })]),
-        checkbox('PCA / multivariate', s.PCA, (v) => updateSetting({ PCA: v })),
-        checkbox('Dendrogram', s.Dendrogram, (v) => updateSetting({ Dendrogram: v })),
-        checkbox('m/z vs RT', s.MZRTplt, (v) => updateSetting({ MZRTplt: v })),
-        checkbox('Mass Defect', s.KMD, (v) => updateSetting({ KMD: v })),
-        checkbox('3D Fold Change', s.FC3Dplt, (v) => updateSetting({ FC3Dplt: v })),
-        checkbox('Volcano Plot', s.Volcanoplt, (v) => updateSetting({ Volcanoplt: v })),
-        el('p', { class: 'muted',
-                  text: 'Most of the runtime is filtering, not plotting — these mainly '
-                        + 'control which result tabs are offered.' }),
       ]),
     ]));
 
@@ -609,7 +704,7 @@ function analysisView() {
                                  text: 'colour features by which biological groups they were detected in' })]),
       groups.length
         ? groupsetEditor()
-        : el('p', { class: 'muted', text: 'Select your input files first — feature sets are built from your biological groups.' }),
+        : el('p', { class: 'muted', text: 'Select your input files first. Feature sets are built from your biological groups.' }),
     ]));
 
     node.append(el('div', { class: 'panel' }, [

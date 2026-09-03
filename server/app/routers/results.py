@@ -87,13 +87,20 @@ def feature_detail(compound: str = CompoundParam,
 @router.get('/feature/abundance')
 def feature_abundance(compound: str = CompoundParam,
                       results: RunResults = Depends(get_results)):
+    """Per-group abundances for one feature.
+
+    A feature that did not pass filtering comes back as ``found: false`` with
+    a reason rather than a 404 -- it is the expected answer for most features
+    in a run, not a failure.
+    """
     try:
         return featuredata.abundance(results, compound)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404,
-                            detail=f'no summary statistics for {compound}') from exc
+    except KeyError:
+        return {'plot': 'abundance', 'feature': compound, 'found': False,
+                'reason': 'No group statistics were calculated for this feature.',
+                'groups': [], 'points': []}
 
 
 @router.get('/feature/spectrum')

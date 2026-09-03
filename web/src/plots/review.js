@@ -3,7 +3,7 @@
  * views from Feature Info. */
 
 import { num } from '../util.js';
-import { axisTitle, baseLayout, draw, message } from './base.js';
+import { axisTitle, baseLayout, draw, imageFormat, message } from './base.js';
 
 export function cvplot(surface, payload) {
   const traces = payload.series.map((series) => ({
@@ -31,10 +31,13 @@ export function cvplot(surface, payload) {
   }
 
   draw(surface, traces, baseLayout({
+    // Both curves climb into the top-right corner, so matplotlib's loc='best'
+    // drops the key at the bottom right here. Plotly has no 'best'.
+    legend: { ...baseLayout().legend, y: 0.03, yanchor: 'bottom' },
     xaxis: { ...baseLayout().xaxis, title: axisTitle(payload.x_label), range: payload.x_range },
     yaxis: { ...baseLayout().yaxis, title: axisTitle(payload.y_label), range: payload.y_range },
     shapes,
-  }));
+  }), imageFormat('cvplot'));
 }
 
 /* Squarified treemap layout (Bruls, Huizing & van Wijk). The desktop uses the
@@ -145,7 +148,7 @@ export function treemap(surface, payload) {
     annotations,
     xaxis: { range: [0, 100], visible: false, fixedrange: true },
     yaxis: { range: [0, 100], visible: false, fixedrange: true },
-  }));
+  }), imageFormat('treemap'));
 }
 
 export function upset(surface, payload, context, options = {}) {
@@ -157,80 +160,139 @@ export function upset(surface, payload, context, options = {}) {
     return;
   }
 
+  // Classic UpSet layout, matching the `upsetplot` package the desktop uses:
+  //   top right   intersection sizes (bars)
+  //   bottom right membership matrix (dots joined by a line)
+  //   bottom left  set sizes (horizontal bars, growing leftwards)
+  // Categories are ordered by set size, largest at the top, and the matrix
+  // rows are banded so a row can be followed across a wide plot.
+  const ordered = [...categories].sort(
+    (a, b) => (payload.totals[b] || 0) - (payload.totals[a] || 0));
+  const rowOf = new Map(ordered.map((name, index) => [name, index]));
+
   const dotX = [];
   const dotY = [];
   const dotOn = [];
-  const lines = [];
+  const dotText = [];
+  const connectors = [];
+  const bands = [];
+
   rows.forEach((row, column) => {
     const members = new Set(row.groups);
     const present = [];
-    categories.forEach((category, level) => {
+    ordered.forEach((category) => {
+      const level = rowOf.get(category);
       dotX.push(column);
       dotY.push(level);
       dotOn.push(members.has(category));
+      dotText.push(`<b>${category}</b><br>${members.has(category) ? 'in' : 'not in'} this set`
+                   + `<br>${row.size} features`);
       if (members.has(category)) present.push(level);
     });
     if (present.length > 1) {
-      lines.push({
+      connectors.push({
         type: 'line', xref: 'x2', yref: 'y2',
         x0: column, x1: column, y0: Math.min(...present), y1: Math.max(...present),
-        line: { color: '#333', width: 2 },
+        line: { color: '#333', width: 2 }, layer: 'below',
       });
     }
   });
 
+  // Alternating row bands behind the matrix.
+  ordered.forEach((_, level) => {
+    if (level % 2) return;
+    bands.push({
+      type: 'rect', xref: 'paper', yref: 'y2',
+      x0: 0, x1: 1, y0: level - 0.5, y1: level + 0.5,
+      fillcolor: 'rgba(0,0,0,0.05)', line: { width: 0 }, layer: 'below',
+    });
+  });
+
   const traces = [
-    // Top: intersection sizes.
     {
       type: 'bar',
+      name: 'Intersection size',
       x: rows.map((_, i) => i),
       y: rows.map((row) => row.size),
       marker: { color: '#26a69a' },
-      text: rows.map((row) => `${row.size} (${row.percent}%)`),
+      text: rows.map((row) => `${row.size}`),
       textposition: 'outside',
-      textfont: { size: 9 },
-      hovertemplate: '%{text}<extra></extra>',
+      textfont: { size: 9, color: '#333' },
+      customdata: rows.map((row) =>
+        `${row.groups.join(' ∩ ') || 'no group'}<br>${row.size} features (${row.percent}%)`),
+      hovertemplate: '%{customdata}<extra></extra>',
+      cliponaxis: false,
       showlegend: false,
       xaxis: 'x', yaxis: 'y',
     },
-    // Bottom: the membership matrix.
     {
       type: 'scatter', mode: 'markers',
       x: dotX, y: dotY,
-      marker: {
-        size: 9,
-        color: dotOn.map((on) => (on ? '#333' : '#cbcbcb')),
-      },
-      text: dotX.map((column, i) => {
-        const category = categories[dotY[i]];
-        return `${category}<br>${dotOn[i] ? 'in' : 'not in'} this set`;
-      }),
+      marker: { size: 10, color: dotOn.map((on) => (on ? '#333' : '#c9c9c9')) },
+      text: dotText,
       hovertemplate: '%{text}<extra></extra>',
       showlegend: false,
       xaxis: 'x2', yaxis: 'y2',
     },
+    {
+      type: 'bar', orientation: 'h',
+      name: 'Set size',
+      x: ordered.map((name) => payload.totals[name] || 0),
+      y: ordered.map((_, index) => index),
+      // `bargap` is a layout-wide setting driven by the intersection bars, so
+      // the horizontal bars get an explicit width instead -- otherwise they
+      // fill their whole row band and read as blocks rather than bars.
+      width: 0.55,
+      marker: { color: '#7f8c8d' },
+      hovertemplate: '%{customdata}<extra></extra>',
+      customdata: ordered.map((name) =>
+        `<b>${name}</b><br>${(payload.totals[name] || 0).toLocaleString()} features total`),
+      showlegend: false,
+      xaxis: 'x3', yaxis: 'y3',
+    },
   ];
 
+  const matrixLeft = 0.3;
+  // Row band height scales with the number of sets. A fixed split makes three
+  // groups occupy the same space as twelve, which spreads the dots so far
+  // apart that the matrix stops reading as a matrix.
+  const matrixHeight = Math.min(0.44, Math.max(0.2, 0.08 * ordered.length + 0.08));
+  const matrixTop = matrixHeight;
   draw(surface, traces, baseLayout({
-    margin: { l: 150, r: 20, t: 24, b: 40 },
+    margin: { l: 12, r: 24, t: 26, b: 48 },
     showlegend: false,
-    shapes: lines,
-    bargap: 0.35,
-    xaxis: { domain: [0, 1], anchor: 'y', showticklabels: false, showgrid: false,
-             range: [-0.6, rows.length - 0.4] },
-    yaxis: { domain: [0.42, 1], anchor: 'x', title: axisTitle('Features'),
-             gridcolor: '#cfcfcf' },
-    xaxis2: { domain: [0, 1], anchor: 'y2', showticklabels: false, showgrid: false,
-              range: [-0.6, rows.length - 0.4] },
+    bargap: 0.3,
+    shapes: [...bands, ...connectors],
+    // Top: intersection sizes.
+    xaxis: { domain: [matrixLeft, 1], anchor: 'y', showticklabels: false,
+             showgrid: false, zeroline: false, range: [-0.6, rows.length - 0.4] },
+    yaxis: { domain: [matrixTop + 0.06, 1], anchor: 'x',
+             title: axisTitle('Intersection size'),
+             gridcolor: '#cfcfcf', zeroline: true, zerolinecolor: '#999' },
+    // Bottom right: membership matrix. Category labels live here, between the
+    // set-size bars and the dots, as in the reference layout.
+    xaxis2: { domain: [matrixLeft, 1], anchor: 'y2', showticklabels: false,
+              showgrid: false, zeroline: false, range: [-0.6, rows.length - 0.4] },
     yaxis2: {
-      domain: [0, 0.38], anchor: 'x2', showgrid: false, zeroline: false,
-      tickmode: 'array', tickvals: categories.map((_, i) => i), ticktext: categories,
-      range: [categories.length - 0.5, -0.5], tickfont: { size: 11 },
+      domain: [0, matrixTop], anchor: 'x2', showgrid: false, zeroline: false,
+      tickmode: 'array', tickvals: ordered.map((_, i) => i), ticktext: ordered,
+      range: [ordered.length - 0.5, -0.5], tickfont: { size: 11 }, side: 'left',
+      ticklabelposition: 'outside', automargin: false,
     },
-  }));
+    // Bottom left: set sizes, growing leftwards away from the matrix.
+    xaxis3: { domain: [0.02, matrixLeft - 0.14], anchor: 'y3', autorange: 'reversed',
+              title: { text: 'Set size', font: { size: 10 } },
+              gridcolor: '#cfcfcf', zeroline: false, tickfont: { size: 9 } },
+    yaxis3: { domain: [0, matrixTop], anchor: 'x3', showticklabels: false,
+              showgrid: false, zeroline: false, range: [ordered.length - 0.5, -0.5] },
+  }), imageFormat('upset'));
 }
 
 export function abundance(surface, payload, options = {}) {
+  if (payload.found === false) {
+    message(surface, payload.reason || 'No abundance data for this feature.');
+    return;
+  }
   if (!payload.groups.length) {
     message(surface, 'No group statistics for this feature.');
     return;
@@ -282,20 +344,31 @@ export function abundance(surface, payload, options = {}) {
     xaxis: 'x2', yaxis: 'y2',
   }));
 
+  if (compact) {
+    // In the rail there is room for one panel, not two. The per-group means
+    // with their propagated error are the half that answers "is this feature
+    // different between groups"; the per-injection strip needs the width it
+    // gets in the full Feature Info view to be readable at all.
+    draw(surface, [{ ...bars, xaxis: 'x', yaxis: 'y' }], baseLayout({
+      margin: { l: 46, r: 10, t: 10, b: 54 },
+      showlegend: false,
+      xaxis: { tickangle: -40, tickfont: { size: 9 }, automargin: false },
+      yaxis: { rangemode: 'tozero', tickfont: { size: 9 }, gridcolor: '#dedede' },
+    }), { displayModeBar: false });
+    return;
+  }
+
   draw(surface, [bars, ...strips], baseLayout({
-    margin: compact ? { l: 40, r: 8, t: 8, b: 62 } : { l: 62, r: 16, t: 16, b: 110 },
+    margin: { l: 62, r: 16, t: 16, b: 110 },
     showlegend: false,
-    xaxis: { domain: [0, 0.42], anchor: 'y', tickangle: -45,
-             tickfont: { size: compact ? 8 : 10 } },
+    xaxis: { domain: [0, 0.42], anchor: 'y', tickangle: -45, tickfont: { size: 10 } },
     yaxis: { domain: [0, 1], anchor: 'x', rangemode: 'tozero',
-             title: compact ? undefined : axisTitle('Abundance'),
-             tickfont: { size: compact ? 8 : 12 } },
-    xaxis2: { domain: [0.5, 1], anchor: 'y2', tickangle: -90,
-              tickfont: { size: compact ? 7 : 9 },
+             title: axisTitle('Abundance'), tickfont: { size: 12 } },
+    xaxis2: { domain: [0.5, 1], anchor: 'y2', tickangle: -90, tickfont: { size: 9 },
               categoryorder: 'array', categoryarray: samples },
     yaxis2: { domain: [0, 1], anchor: 'x2', matches: 'y', showticklabels: false,
               rangemode: 'tozero' },
-  }), compact ? { displayModeBar: false, staticPlot: false } : {});
+  }));
 }
 
 export function spectrum(surface, payload) {
@@ -326,9 +399,13 @@ export function spectrum(surface, payload) {
       hovertemplate: '%{text}<extra></extra>', showlegend: false,
     },
   ], baseLayout({
-    margin: { l: 66, r: 16, t: 16, b: 50 },
+    margin: compact ? { l: 44, r: 8, t: 8, b: 34 } : { l: 66, r: 16, t: 16, b: 50 },
     showlegend: false,
-    xaxis: { ...baseLayout().xaxis, title: axisTitle('m/z'), rangemode: 'tozero' },
-    yaxis: { ...baseLayout().yaxis, title: axisTitle('Abundance'), rangemode: 'tozero' },
-  }));
+    xaxis: { ...baseLayout().xaxis, rangemode: 'tozero',
+             title: compact ? undefined : axisTitle('m/z'),
+             tickfont: { size: compact ? 8 : 12 } },
+    yaxis: { ...baseLayout().yaxis, rangemode: 'tozero',
+             title: compact ? undefined : axisTitle('Abundance'),
+             tickfont: { size: compact ? 8 : 12 } },
+  }), compact ? { displayModeBar: false } : {});
 }

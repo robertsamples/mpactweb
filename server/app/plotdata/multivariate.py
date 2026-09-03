@@ -16,10 +16,20 @@ render as an SVG ellipse.
 import numpy as np
 
 from ..core import ordination
+from ..results import ORDINATION_LOCK
 from . import labels as labelutil
 
 METHODS = ('PCA', 'NMDS', 'PLS-DA')
 VIEWS = ('Scores', 'Loadings')
+
+# How replicates are grouped. Named the way the sample-correlation tab names
+# them rather than offered as a "collapse" checkbox: a checkbox only says
+# what it does if you already know what it collapses, whereas these say what
+# you get.
+#   Individual Injections -- every injection is its own point, no averaging
+#   Biological Replicates -- technical replicates averaged per Sample,
+#                            biological replicates kept separate
+REPLICATE_VIEWS = (labelutil.INJECTIONS, labelutil.BIOLOGICAL)
 
 # Group colour cycle from ``plot_ordination`` -- kept in the same order so a
 # given group gets the same colour it does on the desktop.
@@ -63,18 +73,28 @@ def ordination_plot(results, options=None):
     options = options or {}
     method = options.get('method', 'PCA')
     view = options.get('view', 'Scores')
-    collapse = bool(options.get('collapse_replicates', False))
-    n_components = int(options.get('n_components', 2))
-    n_components = max(2, min(n_components, 10))
+    # The old boolean is still accepted so a stored option set keeps working.
+    replicates = options.get('replicates')
+    if replicates is None:
+        replicates = (labelutil.BIOLOGICAL if options.get('collapse_replicates')
+                      else labelutil.INJECTIONS)
+    if replicates not in REPLICATE_VIEWS:
+        raise ValueError(f'replicates must be one of {", ".join(REPLICATE_VIEWS)}')
+    collapse = replicates == labelutil.BIOLOGICAL
 
     filtered_path = results.require(results.filtered_path)
     raw_header = results.raw_header()
-    x, biolgroup = ordination.load_ordination_matrix(
-        filtered_path, raw_header.copy(), collapse_replicates=collapse)
+    with ORDINATION_LOCK:
+        x, biolgroup = ordination.load_ordination_matrix(
+            filtered_path, raw_header.copy(), collapse_replicates=collapse)
 
     if len(x) < 3:
-        raise ValueError(f'ordination needs at least three samples; this view has {len(x)}')
-    n_components = min(n_components, len(x), x.shape[1])
+        raise ValueError(
+            f'ordination needs at least three points; "{replicates}" gives {len(x)}. '
+            f'Try "{labelutil.INJECTIONS}".')
+    # Same component count the desktop uses: as many as the data supports, to
+    # a maximum of 10.
+    n_components = max(2, min(len(x) - 1, 10))
 
     blank_group = results.blank_group()
     # Colour assignment skips the blank group, as the desktop does -- blanks
@@ -106,7 +126,11 @@ def ordination_plot(results, options=None):
         'methods': list(METHODS),
         'view': view,
         'views': list(VIEWS),
-        'collapse_replicates': collapse,
+        'replicates': replicates,
+        'replicate_views': list(REPLICATE_VIEWS),
+        'n_points': int(len(x)),
+        'point_noun': 'samples' if collapse else 'injections',
+        'n_components': int(n_components),
         'x_label': axis_labels[0],
         'y_label': axis_labels[1],
         'title': title,
@@ -171,9 +195,10 @@ def samplecorr(results, options=None):
 
     filtered_path = results.require(results.filtered_path)
     raw_header = results.raw_header()
-    x, biolgroup = ordination.load_ordination_matrix(
-        filtered_path, raw_header.copy(),
-        collapse_replicates=(view != labelutil.INJECTIONS))
+    with ORDINATION_LOCK:
+        x, biolgroup = ordination.load_ordination_matrix(
+            filtered_path, raw_header.copy(),
+            collapse_replicates=(view != labelutil.INJECTIONS))
     if view == labelutil.GROUPS:
         x = x.groupby(biolgroup).mean()
 

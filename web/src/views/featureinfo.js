@@ -1,50 +1,92 @@
-/* Feature Info: the searchable feature table plus the selected feature's
- * details, abundance plot, MS2 spectrum and NPAtlas matches.
+/* Feature Info: the full feature table, with the selected feature's detail
+ * in the same side rail every plot tab uses.
  *
- * This is the desktop's feature search tree (searchtree.py) and its compound
- * details dialog (ui_featureinfo.py) on one page. The per-column filters use
- * the same rules as the desktop -- they are evaluated server-side by the same
- * vendored `treefilters` module -- and selecting a row here selects the
- * feature everywhere else, exactly as `highlight_feature` does. */
+ * Closer to the desktop's search tree than a paged web table: every feature
+ * is in the list at once, sorted and filtered server-side, and the arrow keys
+ * walk through it. Only the table body scrolls -- the view itself doesn't --
+ * so Up/Down always move the selection instead of scrolling the page out
+ * from under it. The table gets the whole height; the detail lives beside it
+ * rather than underneath, so the list stays as long as the window allows.
+ *
+ * Rows are windowed: at a few thousand features a full DOM table costs tens
+ * of thousands of nodes and makes every keystroke stutter, so only the
+ * visible slice is rendered between two spacer rows. The list stays
+ * logically complete -- scroll position, selection and keyboard navigation
+ * all address the whole set.
+ *
+ * Per-column filters are evaluated server-side by the vendored `treefilters`
+ * module, so a filter behaves exactly as it does on the desktop.
+ */
 
 import { api } from '../api.js';
 import { store } from '../state.js';
 import { clear, debounce, el, num, toast } from '../util.js';
-import { abundance as drawAbundance, spectrum as drawSpectrum } from '../plots/review.js';
 
-const PAGE_SIZE = 200;
+const ROW_HEIGHT = 25;      // must match `table.features tbody tr` height in app.css
+const OVERSCAN = 12;        // rows rendered beyond the viewport, each side
 
 const runId = () => (store.get('run') || {}).run_id;
 
 export function buildFeatureInfoView() {
-  const node = el('div');
-  const tableHost = el('div');
-  const detailHost = el('div');
+  const node = el('div', { class: 'plot-view features-view' });
 
-  const query = { offset: 0, limit: PAGE_SIZE, sort: 'm/z', descending: false,
-                  filters: {}, only_searched: false };
-  let table = null;
+  // include_filtered false == only features that survived filtering, which is
+  // what the desktop's tree lists.
+  const query = { sort: 'm/z', descending: false, filters: {}, include_filtered: false };
+  let table = null;             // last response
+  let rowIndex = new Map();     // compound -> row position, for keyboard nav
+  let autoSearched = false;     // the one-off NPAtlas search has been attempted
 
-  // --- feature table ----------------------------------------------------
+  // --- table shell ------------------------------------------------------
+  const headRow = el('tr');
+  const filterRow = el('tr');
+  const body = el('tbody');
+  const topSpacer = el('tr', { class: 'spacer-row' });
+  const bottomSpacer = el('tr', { class: 'spacer-row' });
+  const tableEl = el('table', { class: 'data features' },
+                     [el('thead', {}, [headRow, filterRow]), body]);
+  const scroller = el('div', { class: 'table-scroll', tabIndex: 0 }, [tableEl]);
+  const counts = el('span', { class: 'status' });
 
-  const loadTable = async () => {
-    const id = runId();
-    if (!id) return;
-    try {
-      table = await api.features(id, query);
-    } catch (error) {
-      clear(tableHost).append(el('div', { class: 'notice error', text: error.message }));
-      return;
+  const toolbar = el('div', { class: 'plot-toolbar' });
+  const tablePane = el('div', { class: 'table-pane' }, [toolbar, scroller]);
+
+  // The details rail is the app's own right-hand panel, shared with every
+  // plot view, so a feature looks the same wherever it is inspected and
+  // hiding it here hides it there too.
+  const host = el('div', { class: 'plot-host' }, [tablePane]);
+
+  // --- table rendering --------------------------------------------------
+
+  function buildHeader() {
+    clear(headRow);
+    clear(filterRow);
+    for (const column of table.columns) {
+      const active = query.sort === column.key;
+      headRow.append(el('th', {
+        title: 'Click to sort',
+        on: {
+          click: () => {
+            // First click on a numeric column sorts descending: "most hits",
+            // "most abundant", "biggest fold change" are what you want from
+            // those columns, whereas a name sorts naturally A-Z.
+            query.descending = active ? !query.descending : column.type === 'number';
+            query.sort = column.key;
+            load({ keepScroll: false });
+          },
+        },
+      }, [
+        el('span', { text: column.label }),
+        active ? el('span', { class: 'sort', text: query.descending ? ' ▼' : ' ▲' }) : null,
+      ]));
+      filterRow.append(el('th', {}, [filterControl(column)]));
     }
-    renderTable();
-  };
+  }
 
-  const reload = debounce(() => { query.offset = 0; loadTable(); }, 260);
-
-  function filterRow(column) {
+  function filterControl(column) {
     if (column.type === 'text') {
       return el('input', {
-        type: 'text', placeholder: 'contains…', style: { width: '100%' },
+        type: 'text', placeholder: 'contains...',
         value: (query.filters[column.key] || {}).text || '',
         on: { input: (event) => {
           query.filters[column.key] = { text: event.target.value };
@@ -54,297 +96,211 @@ export function buildFeatureInfoView() {
     }
     if (column.type === 'number') {
       const current = query.filters[column.key] || {};
-      const box = (which, placeholder) => el('input', {
-        type: 'number', placeholder, style: { width: 'calc(50% - 2px)', minWidth: '48px' },
-        step: 'any',
-        value: current[which] ?? '',
+      const box = (which) => el('input', {
+        type: 'number', placeholder: which, step: 'any', value: current[which] ?? '',
         on: { input: (event) => {
           const value = event.target.value === '' ? null : parseFloat(event.target.value);
           query.filters[column.key] = { ...query.filters[column.key], [which]: value };
           reload();
         } },
       });
-      return el('div', { style: { display: 'flex', gap: '2px' } }, [box('min', 'min'), box('max', 'max')]);
+      return el('div', { class: 'range-filter' }, [box('min'), box('max')]);
     }
-    // Category: the space-joined `groups` tokens, as a multi-select.
     const options = (table && table.categories) || [];
     const chosen = new Set(((query.filters[column.key] || {}).allowed) || []);
     return el('select', {
-      multiple: true, size: 1, style: { width: '100%', height: '26px' },
+      multiple: true, size: 1,
       on: { change: (event) => {
-        const values = Array.from(event.target.selectedOptions).map((option) => option.value);
+        const values = Array.from(event.target.selectedOptions).map((o) => o.value);
         query.filters[column.key] = values.length ? { allowed: values } : null;
         reload();
       } },
-    }, options.map((token) => el('option', { value: token, text: token, selected: chosen.has(token) })));
+    }, options.map((token) => el('option', { value: token, text: token,
+                                             selected: chosen.has(token) })));
   }
 
-  function renderTable() {
-    clear(tableHost);
+  /** Render only the rows currently in view, padded by two spacer rows. */
+  function renderWindow() {
     if (!table) return;
-
-    const head = el('tr');
-    for (const column of table.columns) {
-      const active = query.sort === column.key;
-      head.append(el('th', {
-        title: 'Click to sort',
-        on: { click: () => {
-          query.descending = active ? !query.descending : false;
-          query.sort = column.key;
-          query.offset = 0;
-          loadTable();
-        } },
-      }, [
-        el('span', { text: column.label }),
-        active ? el('span', { class: 'sort', text: query.descending ? ' ▼' : ' ▲' }) : null,
-      ]));
-    }
-
-    const filters = el('tr');
-    for (const column of table.columns) filters.append(el('th', {}, [filterRow(column)]));
-
-    const body = el('tbody');
+    const rows = table.rows;
+    const viewport = scroller.clientHeight || 400;
+    const first = Math.max(0, Math.floor(scroller.scrollTop / ROW_HEIGHT) - OVERSCAN);
+    const visible = Math.ceil(viewport / ROW_HEIGHT) + OVERSCAN * 2;
+    const last = Math.min(rows.length, first + visible);
     const selected = store.get('selectedFeature');
-    for (const row of table.rows) {
+
+    clear(body);
+    topSpacer.style.height = `${first * ROW_HEIGHT}px`;
+    bottomSpacer.style.height = `${Math.max(0, rows.length - last) * ROW_HEIGHT}px`;
+    body.append(topSpacer);
+
+    for (let i = first; i < last; i += 1) {
+      const row = rows[i];
       const compound = row[0];
       body.append(el('tr', {
         class: compound === selected ? 'selected' : '',
         on: { click: () => store.set({ selectedFeature: compound }) },
       }, table.columns.map((column, index) => el('td', {
         class: column.type === 'number' ? 'num' : '',
-        text: column.type === 'number' ? num(row[index], column.digits ?? 3) : (row[index] ?? ''),
+        title: column.type === 'text' ? String(row[index] ?? '') : '',
+        text: column.type === 'number' ? num(row[index], column.digits ?? 3)
+                                       : (row[index] ?? ''),
       }))));
     }
-
-    const shownFrom = table.total ? query.offset + 1 : 0;
-    const shownTo = Math.min(query.offset + query.limit, table.total);
-
-    tableHost.append(el('div', { class: 'panel' }, [
-      el('h3', {}, [
-        el('span', { text: 'Features' }),
-        el('span', { class: 'hint', text: `${shownFrom}–${shownTo} of ${table.total.toLocaleString()}` }),
-      ]),
-      el('div', { class: 'table-wrap' }, [
-        el('table', { class: 'data' }, [el('thead', {}, [head, filters]), body]),
-      ]),
-      el('div', { class: 'btn-row', style: { marginTop: '10px' } }, [
-        el('button', {
-          class: 'btn small', text: '‹ Previous', disabled: query.offset === 0,
-          on: { click: () => { query.offset = Math.max(0, query.offset - query.limit); loadTable(); } },
-        }),
-        el('button', {
-          class: 'btn small', text: 'Next ›', disabled: shownTo >= table.total,
-          on: { click: () => { query.offset += query.limit; loadTable(); } },
-        }),
-        el('button', {
-          class: 'btn small', text: 'Clear filters',
-          on: { click: () => { query.filters = {}; query.offset = 0; loadTable(); } },
-        }),
-        searchButton(),
-        el('label', { class: 'check', title: 'Only features that passed filtering are searched' }, [
-          el('input', {
-            type: 'checkbox', checked: query.only_searched,
-            on: { change: (event) => {
-              query.only_searched = event.target.checked;
-              query.offset = 0;
-              loadTable();
-            } },
-          }),
-          el('span', { class: 'muted', text: 'Searched features only' }),
-        ]),
-      ]),
-    ]));
+    body.append(bottomSpacer);
   }
 
-  /** Fill the Hits column by running the NPAtlas search over every filtered
-   *  feature -- the desktop does this when its Feature Info tab first opens.
-   *  It is an explicit button here because it costs seconds and needs the
-   *  33MB reference table. */
+  function updateCounts() {
+    const shown = table ? table.rows.length : 0;
+    counts.textContent = query.include_filtered
+      ? `${shown.toLocaleString()} features (all)`
+      : `${shown.toLocaleString()} features passing all filters`;
+  }
+
+  async function load({ keepScroll = true } = {}) {
+    const id = runId();
+    if (!id) return;
+    const scrollTop = keepScroll ? scroller.scrollTop : 0;
+    try {
+      // limit 0 == every row; this table is deliberately unpaged.
+      table = await api.features(id, { ...query, limit: 0 });
+    } catch (error) {
+      clear(body).append(el('tr', {}, [el('td', { colSpan: 8 },
+        [el('div', { class: 'notice error', text: error.message })])]));
+      return;
+    }
+    rowIndex = new Map(table.rows.map((row, index) => [row[0], index]));
+    buildHeader();
+    buildToolbar();
+    updateCounts();
+    scroller.scrollTop = scrollTop;
+    renderWindow();
+  }
+
+  const reload = debounce(() => load({ keepScroll: false }), 260);
+
+  function buildToolbar() {
+    clear(toolbar);
+    toolbar.append(counts, el('span', { class: 'spacer' }));
+
+    toolbar.append(el('label', { class: 'check',
+                                 title: 'Features removed by the filters are hidden by default' }, [
+      el('input', {
+        type: 'checkbox', checked: query.include_filtered,
+        on: { change: (event) => {
+          query.include_filtered = event.target.checked;
+          load({ keepScroll: false });
+        } },
+      }),
+      el('span', { class: 'muted', text: 'Show filtered-out features' }),
+    ]));
+
+    toolbar.append(searchButton());
+    toolbar.append(el('button', {
+      class: 'btn small', type: 'button', text: 'Clear filters',
+      on: { click: () => { query.filters = {}; load({ keepScroll: false }); } },
+    }));
+  }
+
   function searchButton() {
     if ((store.get('health') || {}).npatlas === false) {
-      return el('span', { class: 'muted',
-                          text: 'NPAtlas not installed on this server' });
+      return el('span', { class: 'muted', text: 'NPAtlas not installed' });
     }
-    const button = el('button', { class: 'btn small', text: 'Search NPAtlas (all features)' });
-    button.addEventListener('click', async () => {
-      button.disabled = true;
-      button.textContent = 'Searching…';
-      try {
-        const body = await api.dbsearch(runId());
-        toast(`${body.matched} of ${body.searched} features matched within `
-              + `${body.ppm_threshold} ppm`, 'ok');
-        // Only features that survived filtering are searched, so unfiltered
-        // rows would show a blank Hits column. Narrow to the searched set,
-        // which is exactly what the desktop's feature tree lists.
-        query.only_searched = true;
-        query.offset = 0;
-        await loadTable();
-      } catch (error) {
-        toast(error.message, 'error');
-        button.disabled = false;
-        button.textContent = 'Search NPAtlas (all features)';
-      }
+    const button = el('button', {
+      class: 'btn small', type: 'button',
+      text: table && table.searched ? 'Re-search NPAtlas' : 'Search NPAtlas',
     });
+    button.addEventListener('click', () => runSearch(button));
     return button;
   }
 
-  // --- selected feature -------------------------------------------------
-
-  const renderDetail = async () => {
-    const compound = store.get('selectedFeature');
-    const id = runId();
-    clear(detailHost);
-    if (!compound || !id) {
-      detailHost.append(el('div', { class: 'panel' }, [
-        el('h3', { text: 'No feature selected' }),
-        el('p', { class: 'muted',
-                  text: 'Pick a row here, or click a point on any plot — the selection is shared '
-                        + 'across every tab.' }),
-      ]));
-      return;
+  async function runSearch(button) {
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Searching...';
     }
-
-    // Identity block, filled immediately so the panel never looks empty.
-    const identity = el('div', { class: 'panel' }, [
-      el('h3', {}, [el('span', { text: compound })]),
-      el('div', { class: 'muted', text: 'Loading…' }),
-    ]);
-    detailHost.append(identity);
-
-    const abundancePanel = el('div', { class: 'panel' }, [
-      el('h3', { text: 'Abundance' }),
-      el('div', { class: 'plot-surface', style: { minHeight: '300px' } }),
-    ]);
-    detailHost.append(abundancePanel);
-
-    const spectrumPanel = el('div', { class: 'panel' }, [
-      el('h3', { text: 'MS2 spectrum' }),
-      el('div', { class: 'plot-surface', style: { minHeight: '250px' } }),
-    ]);
-    detailHost.append(spectrumPanel);
-
-    const matchPanel = el('div', { class: 'panel' }, [
-      el('h3', { text: 'Database matches' }),
-      el('div', { class: 'muted', text: 'Searching NPAtlas…' }),
-    ]);
-    detailHost.append(matchPanel);
-
-    // Details.
     try {
-      const detail = await api.feature(id, compound);
-      const fields = detail.fields;
-      const list = el('dl', { class: 'kv' });
-      const show = [
-        ['m/z', 'm/z', 4], ['Retention time (min)', 'Retention time', 3],
-        ['kmd', 'Mass defect', 4], ['max', 'Max abundance', 0],
-        ['fc', 'Fold change', 3], ['logfc', 'log2 FC', 3],
-        ['-logp', '-log10 p', 3], ['-logq', '-log10 q', 3],
-        ['median CV', 'Median CV', 3], ['average CV', 'Mean CV', 3],
-        ['groups', 'Groups', null], ['hits', 'DB hits', 0],
-      ];
-      for (const [key, label, digits] of show) {
-        if (fields[key] === undefined || fields[key] === null) continue;
-        list.append(el('dt', { text: label }));
-        list.append(el('dd', { text: digits === null ? String(fields[key]) : num(fields[key], digits) }));
+      const result = await api.dbsearch(runId());
+      toast(`${result.matched} of ${result.searched} features matched within `
+            + `${result.ppm_threshold} ppm`, 'ok');
+      await load({ keepScroll: true });
+    } catch (error) {
+      toast(error.message, 'error');
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Search NPAtlas';
       }
-      clear(identity).append(el('h3', { text: compound }), list);
-    } catch (error) {
-      clear(identity).append(el('h3', { text: compound }),
-                             el('div', { class: 'notice error', text: error.message }));
     }
-
-    // Abundance.
-    try {
-      const payload = await api.abundance(id, compound);
-      drawAbundance(abundancePanel.querySelector('.plot-surface'), payload);
-    } catch (error) {
-      abundancePanel.querySelector('.plot-surface').innerHTML =
-        `<div class="placeholder">${error.message}</div>`;
-    }
-
-    // Spectrum (only when the run had a fragment database).
-    try {
-      const payload = await api.spectrum(id, compound);
-      drawSpectrum(spectrumPanel.querySelector('.plot-surface'), payload);
-    } catch (error) {
-      spectrumPanel.querySelector('.plot-surface').innerHTML =
-        `<div class="placeholder">${error.message}</div>`;
-    }
-
-    // NPAtlas matches.
-    try {
-      const payload = await api.matches(id, compound);
-      renderMatches(matchPanel, payload, id);
-    } catch (error) {
-      clear(matchPanel).append(el('h3', { text: 'Database matches' }),
-                               el('div', { class: 'notice warn', text: error.message }));
-    }
-  };
-
-  function renderMatches(panel, payload, id) {
-    clear(panel);
-    panel.append(el('h3', {}, [
-      el('span', { text: 'Database matches' }),
-      el('span', { class: 'hint',
-                   text: `m/z ${num(payload.mz, 4)} ± ${payload.ppm_threshold} ppm` }),
-    ]));
-    if (!payload.matches.length) {
-      panel.append(el('p', { class: 'muted', text: 'No NPAtlas match within the ppm window.' }));
-      return;
-    }
-
-    const structure = el('div', { class: 'structure hidden' });
-    const body = el('tbody');
-    for (const match of payload.matches.slice(0, 200)) {
-      body.append(el('tr', {
-        title: 'Show structure',
-        on: { click: () => {
-          if (!match.compound_smiles) { toast('No SMILES for this match', 'info'); return; }
-          structure.classList.remove('hidden');
-          clear(structure).append(el('img', {
-            src: api.structureUrl(id, match.compound_smiles),
-            alt: match.compound_name || 'structure',
-            on: { error: () => { clear(structure).append(
-              el('div', { class: 'muted', text: 'Structure rendering is unavailable on this server.' })); } },
-          }));
-        } },
-      }, [
-        el('td', { text: match.compound_name || '' }),
-        el('td', { text: match.compound_molecular_formula || '' }),
-        el('td', { class: 'num', text: num(match.compound_accurate_mass, 4) }),
-        el('td', { class: 'num', text: num(match.ppm, 2) }),
-        el('td', { text: `${match.genus || ''} ${match.origin_species || ''}`.trim() }),
-      ]));
-    }
-
-    panel.append(el('div', { class: 'table-wrap', style: { maxHeight: '260px' } }, [
-      el('table', { class: 'data' }, [
-        el('thead', {}, [el('tr', {}, ['Name', 'Formula', 'Accurate mass', 'ppm', 'Origin']
-          .map((label) => el('th', { text: label })))]),
-        body,
-      ]),
-    ]));
-    panel.append(structure);
-    panel.append(el('p', { class: 'muted', style: { marginTop: '8px' },
-                          text: 'Click a match to render its structure.' }));
   }
+
+  /** Fill the Hits column the first time this tab is opened.
+   *
+   *  The desktop runs the full NPAtlas search when its Feature Info tab first
+   *  appears, which is why its Hits column is never blank. Doing the same
+   *  here removes the state where a feature's detail panel lists matches
+   *  while the table's Hits column still reads "--". */
+  async function autoSearch() {
+    if (autoSearched || !table || table.searched) return;
+    if ((store.get('health') || {}).npatlas === false) return;
+    autoSearched = true;
+    counts.textContent = 'Searching the Natural Products Atlas...';
+    await runSearch(null);
+  }
+
+  // --- keyboard navigation ---------------------------------------------
+
+  function moveSelection(delta) {
+    if (!table || !table.rows.length) return;
+    const current = store.get('selectedFeature');
+    const at = rowIndex.has(current) ? rowIndex.get(current) : -1;
+    jumpTo(Math.max(0, Math.min(table.rows.length - 1, at + delta)));
+  }
+
+  function jumpTo(index) {
+    if (!table || !table.rows.length) return;
+    store.set({ selectedFeature: table.rows[index][0] });
+    scrollRowIntoView(index);
+  }
+
+  function scrollRowIntoView(index) {
+    const headerHeight = tableEl.querySelector('thead')?.offsetHeight || 0;
+    const top = index * ROW_HEIGHT;
+    const viewTop = scroller.scrollTop;
+    const viewBottom = viewTop + scroller.clientHeight - headerHeight - ROW_HEIGHT;
+    if (top < viewTop) {
+      scroller.scrollTop = top;
+    } else if (top > viewBottom) {
+      scroller.scrollTop = top - scroller.clientHeight + headerHeight + ROW_HEIGHT * 2;
+    }
+    renderWindow();
+  }
+
+  scroller.addEventListener('scroll', renderWindow, { passive: true });
+  scroller.addEventListener('keydown', (event) => {
+    // The filter inputs live inside this container; leave their keys alone.
+    if (event.target !== scroller) return;
+    const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 20, PageUp: -20 }[event.key];
+    if (step !== undefined) { event.preventDefault(); moveSelection(step); return; }
+    if (event.key === 'Home') { event.preventDefault(); jumpTo(0); }
+    if (event.key === 'End') { event.preventDefault(); jumpTo(table.rows.length - 1); }
+  });
 
   // --- assembly ---------------------------------------------------------
 
-  node.append(el('h2', { text: 'Feature Info' }));
-  node.append(el('p', { class: 'lede' },
-    ['Every feature in the run, filterable per column. The selected feature is '
-     + 'highlighted on every plot.']));
-  node.append(el('div', { class: 'split' }, [tableHost, detailHost]));
+  node.append(host);
 
   store.on('selectedFeature', () => {
     if (!node.classList.contains('active')) return;
-    renderTable();
-    renderDetail();
+    renderWindow();
   });
 
   return {
-    id: 'features', label: 'Feature Info', group: 'Results', requiresRun: true, node,
-    onShow: async () => { await loadTable(); renderDetail(); },
+    id: 'features', label: 'Feature Info', group: 'Results', requiresRun: true,
+    node, rail: true,
+    onShow: async () => {
+      await load({ keepScroll: false });
+      await autoSearch();
+      scroller.focus({ preventScroll: true });
+    },
   };
 }

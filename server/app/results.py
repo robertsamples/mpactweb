@@ -55,6 +55,15 @@ def clear_cache():
         _CACHE.clear()
 
 
+# ``ordination.load_ordination_matrix(..., collapse_replicates=True)`` writes
+# an ``averagepca.csv`` scratch file next to the peak table and reads it back.
+# On the desktop only one plot is ever built at a time; here two requests for
+# the same run (a tab switch mid-render, say) can interleave and one can read
+# that file while the other is rewriting it. The vendored function cannot be
+# changed, so every call that might write it is serialised instead.
+ORDINATION_LOCK = threading.Lock()
+
+
 class MissingResults(Exception):
     """Raised when a run's outputs aren't on disk (never ran, or wiped)."""
 

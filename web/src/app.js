@@ -8,14 +8,68 @@
 import { api } from './api.js';
 import { store } from './state.js';
 import { $, clear, el, toast } from './util.js';
+import { makeSplitter } from './components.js';
 import { buildSetupViews } from './views/setup.js';
 import { buildResultViews } from './views/results.js';
 import { showRunsDialog } from './views/runs.js';
+import { createStatusBar } from './views/statusbar.js';
+import { detailsRail } from './views/detailsrail.js';
 
 const POLL_INTERVAL_MS = 1500;
 
 const views = new Map();     // id -> {id, label, group, requiresRun, node, onShow}
 let pollTimer = null;
+
+// The one details rail, mounted beside the main region as the counterpart of
+// the navigation bar on the left. Views declare `rail: true` to have it; its
+// width and collapsed state are the app's, not any one view's, so hiding it
+// on one plot hides it on all of them.
+let rail = null;
+let railSplitter = null;
+let railReopen = null;
+
+const railWanted = () => Boolean(views.get(store.get('view'))?.rail);
+
+function mountRail() {
+  rail = detailsRail({
+    onCollapse: () => setRailCollapsed(true),
+    onOpenFeatureInfo: () => showView('features'),
+  });
+  railSplitter = el('div', { class: 'rail-splitter',
+                             title: 'Drag to resize, double-click to reset' });
+  railReopen = el('button', {
+    class: 'rail-toggle', type: 'button', text: '\u2039 Details',
+    title: 'Show the details panel',
+    on: { click: () => setRailCollapsed(false) },
+  });
+  $('.body').append(railSplitter, rail.node, railReopen);
+  makeSplitter(railSplitter, rail.node, {
+    min: 220,
+    max: 640,
+    // Plots size to their container, so the view on screen has to re-lay-out
+    // as the boundary moves; the plot views listen for this.
+    onResize: () => window.dispatchEvent(new Event('resize')),
+    onCommit: (width) => { rail.setWidth(width); window.dispatchEvent(new Event('resize')); },
+  });
+  syncRail();
+}
+
+function syncRail() {
+  if (!rail) return;
+  const wanted = railWanted();
+  const collapsed = rail.isCollapsed();
+  rail.applyWidth();
+  rail.node.classList.toggle('hidden', !wanted);
+  railSplitter.classList.toggle('hidden', !wanted || collapsed);
+  railReopen.classList.toggle('hidden', !wanted || !collapsed);
+  if (wanted && !collapsed) rail.render();
+}
+
+function setRailCollapsed(collapsed) {
+  rail.setCollapsed(collapsed);
+  syncRail();
+  window.dispatchEvent(new Event('resize'));
+}
 
 export function registerView(view) {
   views.set(view.id, view);
@@ -31,6 +85,7 @@ export function showView(id) {
   for (const other of views.values()) other.node.classList.toggle('active', other === view);
   store.set({ view: id });
   renderNav();
+  syncRail();
   if (view.onShow) {
     Promise.resolve(view.onShow()).catch((error) => toast(error.message, 'error'));
   }
@@ -147,11 +202,17 @@ async function boot() {
 
   buildSetupViews();
   buildResultViews();
+  mountRail();
+  store.on('selectedFeature', () => { if (railWanted() && !rail.isCollapsed()) rail.render(); });
 
   store.on(['run', 'catalogue'], () => { renderRunChip(); renderNav(); });
   store.on('view', renderNav);
 
   $('#btn-runs').addEventListener('click', showRunsDialog);
+
+  // Persistent selection readout along the bottom of the window.
+  const statusbar = createStatusBar();
+  $('#statusbar-host').replaceWith(statusbar.node);
 
   renderNav();
   renderRunChip();

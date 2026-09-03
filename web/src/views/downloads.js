@@ -60,7 +60,7 @@ export function buildDownloadsView() {
     const hasSession = items.some((item) => item.key === 'session');
     if (hasSession) {
       host.append(el('div', { class: 'notice info' }, [
-        'The ', el('code', { text: '.mpct' }), ' session file opens in the MPACT desktop app — '
+        'The ', el('code', { text: '.mpct' }), ' session file opens in the MPACT desktop app, '
         + 'use it to continue this exact analysis there.',
       ]));
     }

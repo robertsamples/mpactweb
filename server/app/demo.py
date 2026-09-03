@@ -1,6 +1,6 @@
 """The bundled demo dataset.
 
-PTY087I2: a *Streptomyces* elicitor study — a solvent blank, a media
+PTY087I2: a *Streptomyces* elicitor study: a solvent blank, a media
 control, and two cerium-treated conditions, in technical triplicate. It is
 the dataset MPACT's own documentation and tests use, so a first-time visitor
 can see a real analysis (real filters, real group separation, real volcano)
@@ -30,7 +30,7 @@ DEMO_FILES = (
 )
 
 DESCRIPTION = {
-    'name': 'PTY087I2 — cerium elicitation',
+    'name': 'PTY087I2 cerium elicitation',
     'summary': ('A four-group Streptomyces elicitor study in technical '
                 'triplicate: solvent blank, media control, 0 µM and 250 µM '
                 'cerium. ~4,950 features across 30 injections, with an MS2 '

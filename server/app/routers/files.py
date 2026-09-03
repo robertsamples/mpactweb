@@ -14,9 +14,9 @@ from fastapi.responses import FileResponse
 
 import shutil
 
-from .. import config, demo, inspect as inspection, storage
+from .. import config, demo, inspect as inspection, mpctsession, storage
 from ..deps import get_file, get_session
-from ..schemas import FileOut
+from ..schemas import AnalysisSettings, FileOut
 
 router = APIRouter(prefix='/api/files', tags=['files'])
 
@@ -139,6 +139,85 @@ def load_demo(session: storage.Session = Depends(get_session)):
         loaded.append(session.update_file(record.id, detail=detail, fmt=detail.get('format')))
 
     return [_as_out(record) for record in loaded]
+
+
+@router.post('/session')
+async def import_session(
+    file: UploadFile = File(...),
+    session: storage.Session = Depends(get_session),
+):
+    """Open a saved ``.mpct`` session: the desktop's File > Open.
+
+    A save file carries its own copies of the peak table, sample list,
+    metadata and fragment database, so importing one fills the library and
+    all four slots as well as every filtering and analysis setting. The files
+    land in the library like any other upload, which means the imported
+    session can then be edited and re-run rather than only replayed.
+    """
+    name = storage.safe_filename(file.filename or 'session.mpct')
+    suffix = ('.' + name.rsplit('.', 1)[-1].lower()) if '.' in name else ''
+    if suffix not in mpctsession.SUFFIXES:
+        allowed = ', '.join(sorted(mpctsession.SUFFIXES))
+        raise HTTPException(status_code=400,
+                            detail=f'a session file must be one of: {allowed} '
+                                   f'(got "{suffix or name}")')
+
+    blob = bytearray()
+    while chunk := await file.read(config.UPLOAD_CHUNK_BYTES):
+        blob.extend(chunk)
+        if len(blob) > config.MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f'session file exceeds the '
+                       f'{config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit')
+
+    warnings = []
+    try:
+        payload = mpctsession.load(bytes(blob))
+        settings = mpctsession.settings_from(payload['parameters'], warnings)
+        files = mpctsession.input_files(payload, warnings)
+    except mpctsession.SessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Validate through the same schema a run request uses, so an import can
+    # never leave the form in a state the Run button would reject.
+    try:
+        settings = AnalysisSettings(**settings).model_dump()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=422,
+            detail=f'the settings in this session file are not usable: {exc}') from exc
+
+    # An identical file already in the library is reused rather than copied
+    # again, so importing the same session twice does not fill the library.
+    existing = {(record.kind, record.name, record.size): record
+                for record in session.files()}
+    inputs, loaded = {}, []
+    for kind, filename, content in files:
+        safe = storage.safe_filename(filename)
+        already = existing.get((kind, safe, len(content)))
+        if already is None:
+            record = session.add_file(kind=kind, name=safe, size=len(content))
+            session.path_for(record).write_bytes(content)
+            detail = inspection.inspect_file(session, record)
+            record = session.update_file(record.id, detail=detail,
+                                         fmt=detail.get('format'))
+        else:
+            record = already
+        inputs[kind] = record.id
+        loaded.append(record)
+
+    for kind in ('peaktable', 'samplelist', 'metadata'):
+        if kind not in inputs:
+            warnings.append(f'no {kind} in this session file; select one before running')
+
+    return {
+        'name': name,
+        'files': [_as_out(record) for record in loaded],
+        'inputs': inputs,
+        'settings': settings,
+        'warnings': warnings,
+    }
 
 
 @router.post('/groups')

@@ -155,18 +155,37 @@ def biological_groups(session, peaktable, samplelist, metadata):
 def suggest_groups(groups):
     """Default blank / experimental / control selections.
 
-    Mirrors ``MainWindow.getgroups``: the first group whose name contains
-    "blank" becomes the blank group, and the first two non-blank groups become
-    the experimental and control groups.
+    A faithful port of ``MainWindow.getgroups``'s combo-box seeding, which is
+    subtler than it first looks because it assigns by *overwriting* as it
+    walks the group list:
+
+    - blank: the **last** group whose name contains "blank". When no group
+      matches, the desktop's combo box is simply left at index 0, so the
+      first group becomes the blank group -- reproduced here rather than
+      leaving it empty, which would silently disable blank filtering on a
+      dataset whose blank group is named something else.
+    - experimental: the **first** non-blank group (it is only assigned once).
+    - control: the **last** non-blank group (reassigned on every later pass).
     """
-    blank, experimental, control = '', '', ''
-    for group in groups:
-        name = str(group)
+    names = [str(group) for group in groups]
+    if not names:
+        return {'blank': '', 'experimental': '', 'control': ''}
+
+    blank = ''
+    experimental = ''
+    control = ''
+    for name in names:
         if 'blank' in name.lower():
-            if not blank:
-                blank = name
+            blank = name
         elif not experimental:
             experimental = name
-        elif not control:
+        else:
             control = name
+
+    if not blank:
+        blank = names[0]
+    # A single non-blank group leaves control unset; fall back to the
+    # experimental group so the pickers are never half-empty.
+    if not control:
+        control = experimental
     return {'blank': blank, 'experimental': experimental, 'control': control}

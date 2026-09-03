@@ -25,6 +25,7 @@ from sklearn.preprocessing import normalize
 
 from .. import config
 from ..core import clusterpurity, ordination, pvclust
+from ..results import ORDINATION_LOCK
 from . import labels as labelutil
 
 COLOR_MODES = ('Purity', 'None')
@@ -45,8 +46,9 @@ def _matrix_for_view(results, view):
     if view == labelutil.BIOLOGICAL:
         # Leaves are Samples (technical replicates averaged); purity is judged
         # against Biolgroup.
-        x, biolgroup = ordination.load_ordination_matrix(
-            filtered_path, raw_header.copy(), collapse_replicates=True)
+        with ORDINATION_LOCK:
+            x, biolgroup = ordination.load_ordination_matrix(
+                filtered_path, raw_header.copy(), collapse_replicates=True)
         scaled = pd.DataFrame(normalize(x.values, axis=1), columns=x.columns, index=x.index)
         leaf_names = scaled.index.tolist()
         leaf_labels = [biolgroup[name] for name in leaf_names]

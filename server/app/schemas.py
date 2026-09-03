@@ -52,7 +52,7 @@ class AnalysisSettings(BaseModel):
     ringingwin: float = 0.5                 # lineEdit_ringwin
     isopeakwin: float = 0.01                # lineEdit_isowin (also -> dimerpeakwin)
     RTwin: float = 0.005                    # lineEdit_rtwin
-    maxisowin: float = 0.0                  # combo_maxisoshift (items "0".."5")
+    maxisowin: float = 4.0                  # combo_maxisoshift (items "0".."5")
 
     # --- Filtering Settings: blank filtering / group parsing -------------
     blnkfltr: bool = True                   # checkBox_blankfilter

@@ -8,7 +8,8 @@
  * splits enriched (red) from depleted (blue). */
 
 import { num } from '../util.js';
-import { axisTitle, baseLayout, draw, highlightTrace, message, onSelect, paddedRange } from './base.js';
+import { axisTitle, baseLayout, draw, gridded, highlightTrace, imageFormat,
+         message, onSelect, originRange, paddedRange } from './base.js';
 
 const CLASS_LABEL = { up: 'Enriched', down: 'Depleted', ns: 'Not significant' };
 
@@ -78,7 +79,9 @@ export function volcano(surface, payload, context, options = {}) {
   const allX = traces.flatMap((trace) => trace.x || []);
   const allY = traces.flatMap((trace) => trace.y || []);
   const xRange = paddedRange(allX) || [-7, 7];
-  const yRange = paddedRange([0, ...allY]) || [0, 1];
+  // The desktop's `set_ylim(0, maxpval*1.1)`: significance starts at zero and
+  // the headroom above the most significant point keeps it off the frame.
+  const yRange = originRange(allY, 0.1) || [0, 1];
 
   const line = (x0, y0, x1, y1) => ({
     type: 'line', x0, y0, x1, y1,
@@ -92,10 +95,10 @@ export function volcano(surface, payload, context, options = {}) {
   if (Number.isFinite(pqCut)) shapes.push(line(xRange[0], pqCut, xRange[1], pqCut));
 
   draw(surface, traces, baseLayout({
-    xaxis: { ...baseLayout().xaxis, title: axisTitle(payload.x_label), range: xRange },
-    yaxis: { ...baseLayout().yaxis, title: axisTitle(payload.y_label), range: yRange },
+    xaxis: { ...gridded(), title: axisTitle(payload.x_label), range: xRange },
+    yaxis: { ...gridded(), title: axisTitle(payload.y_label), range: yRange },
     shapes,
-  }));
+  }), imageFormat('volcano'));
 
   onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
   return { up: buckets.up.length, down: buckets.down.length, ns: buckets.ns.length };

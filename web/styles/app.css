@@ -19,7 +19,7 @@
   --danger: #e05252;
   --warn: #d8a13a;
   --ok: #4caf80;
-  --plot-bg: #e3e3e3;
+  --plot-bg: #e1e1e1;
   --radius: 3px;
   --sidebar-width: 208px;
   --font: "Segoe UI", "Bahnschrift", system-ui, -apple-system, sans-serif;
@@ -27,6 +27,19 @@
 }
 
 * { box-sizing: border-box; }
+
+/* Tell the browser this is a dark UI so form controls and (in Firefox)
+   scrollbars follow, then style the WebKit/Blink scrollbars explicitly --
+   without this they render as light-mode bars on every dark panel. */
+:root { color-scheme: dark; }
+* { scrollbar-color: #4b4b4b #1c1c1c; scrollbar-width: thin; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: #1c1c1c; }
+::-webkit-scrollbar-corner { background: #1c1c1c; }
+::-webkit-scrollbar-thumb {
+  background: #4b4b4b; border-radius: 6px; border: 2px solid #1c1c1c;
+}
+::-webkit-scrollbar-thumb:hover { background: #5f5f5f; }
 
 html, body {
   margin: 0;
@@ -67,6 +80,9 @@ input[type="color"] {
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
+/* The desktop application's icon, so the browser tab and the window header
+   carry the same mark as the installed program. */
+.titlebar .app-icon { width: 20px; height: 20px; display: block; }
 .titlebar .brand { font-weight: 700; letter-spacing: 1px; }
 .titlebar .brand span { color: var(--accent); }
 .titlebar .spacer { flex: 1; }
@@ -81,6 +97,26 @@ input[type="color"] {
 .titlebar .run-chip.is-failed { color: var(--danger); border-color: var(--danger); }
 
 .body { display: flex; flex: 1; min-height: 0; }
+
+/* Persistent selection readout, the web form of the desktop's
+   lbl_featurename / lbl_featuremz / lbl_featurert / lbl_injname labels: what
+   is selected has to stay on screen, not flash past in a toast. */
+.statusbar {
+  display: flex; align-items: center; gap: 18px;
+  flex: 0 0 auto; height: 26px; padding: 0 14px;
+  background: #1b1b1b; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--muted); overflow: hidden; white-space: nowrap;
+}
+.statusbar .slot-label { color: #6f6f6f; }
+.statusbar .value { color: var(--text); font-variant-numeric: tabular-nums; }
+.statusbar .value.none { color: #6f6f6f; font-style: italic; }
+.statusbar .feature { color: var(--accent); font-weight: 600; }
+.statusbar .spacer { flex: 1; }
+.statusbar button {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  padding: 0 4px; font-size: 12px;
+}
+.statusbar button:hover { color: var(--text); }
 
 /* --- sidebar ------------------------------------------------------------ */
 
@@ -115,16 +151,18 @@ input[type="color"] {
 .view > h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
 .view > .lede { margin: 0 0 18px; color: var(--muted); max-width: 70ch; }
 
-/* A plot view fills the window: the surface takes whatever height is left
-   after the heading, sub-tabs and footer, instead of being a fixed slab with
-   dead space under it. */
-.view.plot-view.active { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 14px; }
-.view.plot-view > h2 { flex: 0 0 auto; }
-.view.plot-view > .tab-header { flex: 0 0 auto; }
-.view.plot-view .plot-host { flex: 1; min-height: 0; display: flex; gap: 14px; }
+/* A plot view fills the window. The heading and sub-tabs sit on the dark
+   chrome; below them the working surface runs edge to edge in the desktop's
+   grey, with the details rail docked to its right. No dark gutter around the
+   plot: the middle of the window is one continuous region. */
+.view.plot-view.active {
+  display: flex; flex-direction: column; overflow: hidden; padding: 0;
+}
+/* No title strip above a plot: the view is named in the navigation bar, and
+   the graphing window starts at the top of the region. */
+.view.plot-view > .tab-header { flex: 0 0 auto; padding: 10px 18px 8px; margin-bottom: 0 !important; }
+.view.plot-view .plot-host { flex: 1; min-height: 0; display: flex; gap: 0; }
 .view.plot-view .plot-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.view.plot-view .plot-panel .plot-surface { flex: 1; min-height: 240px; }
-.view.plot-view .plot-panel .plot-footer { flex: 0 0 auto; }
 /* Panels that are documents rather than charts (the Summary tab) scroll. */
 .view.plot-view .plot-panel.scrolls { overflow: auto; }
 
@@ -139,6 +177,29 @@ input[type="color"] {
   color: var(--text); display: flex; align-items: center; gap: 8px;
 }
 .panel > h3 .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
+
+/* Collapsible panel: a disclosure row that toggles its body. Used for the
+   demo dataset block and for each section of the details rail. */
+.collapsible > .collapsible-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; color: var(--text);
+  padding: 0; cursor: pointer; text-align: left; font-weight: 600; font-size: 13px;
+}
+.collapsible > .collapsible-head:hover { color: #fff; }
+.collapsible > .collapsible-head .twisty {
+  display: inline-block; width: 10px; flex: 0 0 10px; color: var(--muted);
+  transition: transform .12s ease;
+}
+.collapsible.open > .collapsible-head .twisty { transform: rotate(90deg); }
+.collapsible > .collapsible-head .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
+.collapsible > .collapsible-body { display: none; padding-top: 10px; }
+.collapsible.open > .collapsible-body { display: block; }
+
+/* In a button row, a disclosure sits inline with the button rather than
+   stacking under it. */
+.btn-row > .collapsible { flex: 1; min-width: 0; }
+.btn-row > .collapsible > .collapsible-head { font-weight: 400; color: var(--muted); }
+.btn-row > .collapsible > .collapsible-head:hover { color: var(--text); }
 
 .grid { display: grid; gap: 14px; }
 .grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
@@ -231,39 +292,94 @@ select option { background: #1c1c1c; color: var(--text); }
 
 /* --- plot surfaces ------------------------------------------------------ */
 
+/* A plot is one object: a light canvas carrying its own bars. What is being
+   plotted is chosen on the bar across the top of the graphing window; how you
+   move around it and save it lives in the navigation strip underneath, where
+   the desktop puts matplotlib's toolbar. Both are light-on-grey like the rest
+   of the canvas, not dark strips floating over it. */
+.plot-canvas {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: var(--plot-bg); overflow: hidden;
+  border-top: 1px solid var(--border);
+}
 .plot-toolbar {
+  flex: 0 0 auto;
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 10px; background: var(--panel-2);
-  border: 1px solid var(--border); border-bottom: none;
-  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 7px 10px;
 }
-.plot-toolbar label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 5px; }
-.plot-toolbar select, .plot-toolbar input[type="number"], .plot-toolbar input[type="text"] {
-  background: #1c1c1c; border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 3px 6px;
+.plot-canvas .plot-toolbar {
+  background: #d7d7d7; color: #2b2b2b;
+  border-bottom: 1px solid #c2c2c2;
 }
+
+/* The navigation toolbar: this app's NavigationToolbar2QT. */
+.plot-navbar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 3px 8px; background: #d7d7d7; color: #2b2b2b;
+  border-top: 1px solid #c2c2c2;
+}
+.plot-navbar .nav-group { display: flex; align-items: center; gap: 2px; }
+.plot-navbar .nav-group + .nav-group {
+  margin-left: 4px; padding-left: 10px; border-left: 1px solid #bcbcbc;
+}
+.plot-navbar .spacer { flex: 1; }
+.nav-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 27px; height: 24px; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius);
+  color: #333; cursor: pointer;
+}
+.nav-btn svg {
+  fill: none; stroke: currentColor; stroke-width: 1.4;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.nav-btn:hover:not(:disabled) { background: #c9c9c9; border-color: #b0b0b0; }
+.nav-btn:disabled { color: #a0a0a0; cursor: default; }
+/* A latched tool stays visibly pressed, as matplotlib's pan and zoom do. */
+.nav-btn.active {
+  background: #bcd8d3; border-color: var(--accent-dim); color: #10403b;
+}
+.plot-navbar .export-format {
+  background: #fff; color: #1e1e1e; border: 1px solid #b4b4b4;
+  border-radius: var(--radius); padding: 1px 4px; font-size: 11px;
+}
+.plot-navbar .export-format option { background: #fff; color: #1e1e1e; }
+.plot-canvas .plot-toolbar label { color: #4a4a4a; font-size: 12px; display: flex; align-items: center; gap: 5px; }
+.plot-canvas .plot-toolbar select,
+.plot-canvas .plot-toolbar input[type="number"],
+.plot-canvas .plot-toolbar input[type="text"] {
+  background: #ffffff; color: #1e1e1e;
+  border: 1px solid #b4b4b4; border-radius: var(--radius); padding: 2px 6px;
+}
+.plot-canvas .plot-toolbar select option { background: #ffffff; color: #1e1e1e; }
 .plot-toolbar input[type="number"] { width: 78px; }
+.plot-canvas .plot-toolbar input[type="checkbox"] { accent-color: var(--accent-dim); }
+.plot-canvas .plot-toolbar .check,
+.plot-canvas .plot-toolbar .check span { color: #2b2b2b; }
 .plot-toolbar .spacer { flex: 1; }
-.plot-toolbar .status { color: var(--muted); font-size: 12px; }
+.plot-canvas .plot-toolbar .status { color: #5c5c5c; }
+.plot-toolbar .status { font-size: 12px; }
+.plot-canvas .plot-toolbar .btn {
+  background: #e0e0e0; color: #222; border-color: #b4b4b4;
+}
+.plot-canvas .plot-toolbar .btn:hover:not(:disabled) { background: #d2d2d2; }
+.plot-canvas .plot-toolbar .btn.primary { background: var(--accent-dim); color: #fff;
+  border-color: var(--accent-dim); }
 
 .plot-surface {
-  background: var(--plot-bg); border: 1px solid var(--border);
-  border-radius: 0 0 var(--radius) var(--radius);
-  min-height: 460px; position: relative;
+  flex: 1; min-height: 240px; position: relative;
+  background: var(--plot-bg);
 }
-.plot-surface.tall { min-height: 620px; }
-.plot-surface.no-toolbar { border-radius: var(--radius); }
-/* Plotly's mode bar is this app's matplotlib navigation toolbar. Pin it
-   visible and give it a solid ground so it reads as a toolbar rather than as
-   an overlay on the data. */
-.plot-surface .modebar {
-  background: rgba(255, 255, 255, .82) !important;
-  border: 1px solid #c4c4c4; border-radius: var(--radius);
-  padding: 1px 2px !important;
-}
-.plot-surface .modebar-btn path { fill: #444 !important; }
-.plot-surface .modebar-btn:hover path { fill: var(--accent-dim) !important; }
+.plot-surface.tall { min-height: 240px; }
 
+/* The caption sits on the working surface, between the plot and its
+   controls, so it is dark-on-grey rather than light-on-dark. */
+.plot-footer { flex: 0 0 auto; padding: 4px 12px; color: #4a4a4a; font-size: 12px; }
+.plot-footer:empty { display: none; }
+.plot-footer p { margin: 0; color: #4a4a4a; }
+.plot-footer .muted { color: #5c5c5c; }
+.plot-footer .plot-legend .item { color: #4a4a4a; }
+.plot-footer .notice { background: #cfcfcf; color: #3a2a2a; }
 .plot-surface .placeholder {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: #555; text-align: center; padding: 20px;
@@ -335,44 +451,184 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); }
+/* The session-import panel accepts a dragged .mpct, like the file slots. */
+.panel.dragover { border-color: var(--accent); background: #22312f; }
+.session-status:empty { display: none; }
+.session-status { margin-top: 10px; }
+
 .hidden { display: none !important; }
 .pill {
   display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px;
   background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
 }
 
-/* Feature Info uses a split: table on the left, detail on the right. The
-   table carries seven columns, so it gets the larger share and tighter cell
-   padding -- otherwise the last column (Hits) is pushed into overflow. */
-.split { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.split table.data th, .split table.data td { padding: 5px 6px; }
-.split table.data th:first-child, .split table.data td:first-child { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
-@media (max-width: 1250px) { .split { grid-template-columns: 1fr; } }
+/* --- Feature Info -------------------------------------------------------
+   The full feature list on top, the selected feature's detail below, with a
+   draggable boundary. Only the table body scrolls, so the arrow keys always
+   move the selection instead of scrolling the page away underneath it. */
+
+.features-view .plot-host { flex: 1; min-height: 0; display: flex; gap: 0;
+  padding: 14px 18px; }
+.table-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.table-pane > .plot-toolbar {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.table-pane > .plot-toolbar .status { color: var(--muted); }
+.table-pane > .plot-toolbar label,
+.table-pane > .plot-toolbar .check,
+.table-pane > .plot-toolbar .check span { color: var(--muted); }
+.table-pane > .plot-toolbar input[type="checkbox"] { accent-color: var(--accent); }
+.table-pane > .plot-toolbar .btn { background: var(--control); color: var(--text); border-color: #565656; }
+.table-pane > .plot-toolbar .btn:hover:not(:disabled) { background: var(--control-hover); }
+.table-scroll {
+  flex: 1; min-height: 0; overflow: auto;
+  border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius); background: var(--panel);
+  outline: none;
+}
+.table-scroll:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+
+table.features { width: 100%; table-layout: fixed; }
+table.features th, table.features td { padding: 4px 7px; }
+table.features tbody tr { height: 25px; }        /* must match ROW_HEIGHT in featureinfo.js */
+table.features tbody tr.spacer-row { height: 0; }
+table.features tbody tr.spacer-row td { padding: 0; border: none; }
+table.features td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.features thead th { z-index: 2; }
+table.features thead tr:nth-child(2) th {
+  top: 27px; padding: 3px 5px; font-weight: 400; background: var(--panel);
+}
+table.features thead input, table.features thead select { width: 100%; padding: 2px 5px; font-size: 11px; }
+table.features .range-filter { display: flex; gap: 3px; }
+table.features .range-filter input { width: 50%; min-width: 0; }
+/* Compound ids are long; the other columns are numbers and stay narrow. */
+table.features th:nth-child(1), table.features td:nth-child(1) { width: 22%; }
+table.features th:nth-child(5), table.features td:nth-child(5) { width: 22%; }
+
+.kv.wide { grid-template-columns: max-content 1fr; column-gap: 20px; }
+
+/* --- database match browser (details rail) ------------------------------
+   Structure and hit list together, with the structure following the
+   highlighted hit, as the desktop's compound window shows them. */
+.matches-panel { display: flex; flex-direction: column; gap: 8px; }
+.match-nav { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.match-nav .btn { padding: 1px 9px; line-height: 1.3; }
+.matches-panel .structure {
+  background: #ffffff; border-radius: var(--radius); padding: 6px;
+  min-height: 150px; display: flex; align-items: center; justify-content: center;
+}
+.matches-panel .structure img { max-height: 190px; max-width: 100%; }
+.match-caption { text-align: center; font-size: 12px; }
+.match-caption .match-title { font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.match-list {
+  max-height: 168px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius); background: #1c1c1c;
+  outline: none;
+}
+.match-list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.match-row {
+  display: flex; width: 100%; gap: 8px; align-items: baseline;
+  padding: 4px 8px; background: none; border: none; border-bottom: 1px solid #262626;
+  color: var(--text); cursor: pointer; text-align: left; font-size: 12px;
+}
+.match-row:last-child { border-bottom: none; }
+.match-row:hover { background: var(--panel); }
+.match-row.active { background: #2b3a38; color: #fff; }
+.match-row .match-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match-row .match-ppm { color: var(--muted); font-variant-numeric: tabular-nums; }
+.match-row.active .match-ppm { color: #cfe9e5; }
+.kv dd.ok { color: var(--ok); }
+.kv dd.bad { color: var(--warn); }
+.detail-fields { display: flex; gap: 46px; flex-wrap: wrap; align-items: flex-start; }
+.detail-fields h5 {
+  margin: 0 0 8px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
+}
+.matches { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: start; }
+.matches-table { max-height: 100%; overflow: auto; }
+.matches .structure { width: 260px; }
 
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
 
-/* Details rail: the selected feature's identity beside the plot, so clicking
-   a point answers "what is this?" without leaving the tab. Mirrors the
-   desktop's feature labels + Details button. */
+/* Details rail: the app's right-hand panel, the counterpart of the navigation
+   bar on the left. It runs the full height of the window and carries its own
+   header, including the control that hides it, so clicking a point answers
+   "what is this?" without leaving the tab. Mirrors the desktop's feature
+   labels + Details window. */
 .details-rail {
-  flex: 0 0 296px; width: 296px; overflow: auto;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 12px 14px;
+  flex: 0 0 auto; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--border);
 }
-.details-rail.empty { display: flex; align-items: center; justify-content: center; }
+.rail-header {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 8px 8px 8px 14px;
+  background: var(--panel-2); border-bottom: 1px solid var(--border);
+}
+.rail-header .rail-title {
+  font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
+}
+.rail-header .spacer { flex: 1; }
+.rail-collapse {
+  background: none; border: 1px solid transparent; border-radius: var(--radius);
+  color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1;
+  padding: 1px 8px;
+}
+.rail-collapse:hover {
+  color: var(--text); border-color: var(--border); background: var(--panel);
+}
+.details-rail.empty .rail-sections { align-items: center; justify-content: center; }
+.details-rail.collapsed {
+  width: 0 !important; flex-basis: 0 !important;
+  padding: 0; border: none; overflow: hidden;
+}
+
+/* Drag handle between the main region and the rail. */
+.rail-splitter {
+  flex: 0 0 5px; cursor: col-resize; position: relative;
+  background: var(--bg);
+}
+.rail-splitter::before {
+  content: ''; position: absolute; inset: 0 1px;
+  background: var(--border);
+}
+.rail-splitter:hover::before, .rail-splitter.dragging::before { background: var(--accent); }
+.rail-splitter.hidden-splitter { display: none; }
+
+/* The tab that reopens a collapsed rail. */
+.rail-toggle {
+  flex: 0 0 22px; width: 22px; align-self: stretch;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--muted);
+  cursor: pointer; padding: 0; font-size: 11px;
+  writing-mode: vertical-rl; text-orientation: mixed;
+}
+.rail-toggle:hover { color: var(--text); border-color: var(--accent); }
 .details-rail h4 {
   margin: 0 0 10px; font-size: 13px; font-weight: 600;
   word-break: break-all; line-height: 1.35;
 }
 .details-rail .rail-head { display: flex; align-items: flex-start; gap: 8px; }
 .details-rail .rail-head button { margin-left: auto; flex: 0 0 auto; }
-.details-rail .mini-plot {
-  background: var(--plot-bg); border-radius: var(--radius);
-  height: 190px; margin-top: 12px;
+.details-rail .rail-sections {
+  flex: 1; min-height: 0; overflow: auto; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 12px;
 }
-.details-rail .rail-actions { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.details-rail .collapsible { border-top: 1px solid var(--border); padding-top: 10px; }
+.details-rail .collapsible:first-of-type { border-top: none; padding-top: 0; }
+.details-rail .mini-plot {
+  background: var(--plot-bg); border-radius: var(--radius); height: 185px;
+}
+.details-rail .mini-plot .placeholder {
+  position: static; display: flex; align-items: center; justify-content: center;
+  height: 100%; font-size: 11px; padding: 8px; text-align: center;
+}
+.details-rail .rail-actions { margin-top: auto; padding-top: 10px; display: flex; gap: 6px; }
 .details-rail .rail-actions .btn { width: 100%; }
 
 .structure { background: #fff; border-radius: var(--radius); padding: 6px; text-align: center; }

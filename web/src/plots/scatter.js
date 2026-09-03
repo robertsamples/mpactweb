@@ -7,7 +7,8 @@
  * feature in both apps. */
 
 import { rgba, num } from '../util.js';
-import { axisTitle, baseLayout, draw, highlightTrace, message, onSelect, paddedRange } from './base.js';
+import { AXIS, axisTitle, baseLayout, draw, gridded, highlightTrace, imageFormat,
+         message, onSelect, originRange, paddedRange } from './base.js';
 
 function hoverText(series, index, fields) {
   const parts = [`<b>${series.ids[index]}</b>`];
@@ -55,13 +56,22 @@ function render2d(surface, payload, context, options) {
   const allX = payload.series.flatMap((series) => series.x || []);
   const allY = payload.series.flatMap((series) => series.y || []);
 
+  // `grid: true` only for the plots whose desktop counterpart calls
+  // ax.grid() -- m/z vs RT does not, the mass-defect and quality views do.
+  const axis = options.grid ? gridded() : AXIS;
+  // Retention time, m/z and mass defect all start at zero on the desktop
+  // (`set_xlim(0, ...)`/`set_ylim(0, ...)`); only the ceiling is autoscaled
+  // here so a dataset larger than the desktop's fixed window still fits.
+  const range = (explicit, values, fromZero) =>
+    explicit || (fromZero ? originRange(values) : paddedRange(values));
   draw(surface, traces, baseLayout({
-    xaxis: { ...baseLayout().xaxis, title: axisTitle(payload.x_label),
-             range: options.xRange || paddedRange(allX) },
-    yaxis: { ...baseLayout().yaxis, title: axisTitle(payload.y_label),
-             range: options.yRange || payload.y_range || paddedRange(allY) },
+    xaxis: { ...axis, title: axisTitle(payload.x_label),
+             range: range(options.xRange, allX, options.xFromZero !== false) },
+    yaxis: { ...axis, title: axisTitle(payload.y_label),
+             range: range(options.yRange || payload.y_range, allY,
+                          options.yFromZero !== false) },
     shapes: options.shapes || [],
-  }));
+  }), imageFormat(payload.plot));
 
   onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }
@@ -93,6 +103,7 @@ export function massdefect(surface, payload, context) {
   }));
   render2d(surface, payload, context, {
     yRange: [0, 1],
+    grid: true,
     shapes,
     fields: (series) => [
       ['m/z', series.x, 4],
@@ -103,6 +114,7 @@ export function massdefect(surface, payload, context) {
 
 export function quality(surface, payload, context) {
   render2d(surface, payload, context, {
+    grid: true,
     fields: (series) => [
       ['m/z', series.y, 4],
       ['RT', series.x, 3],
@@ -134,14 +146,21 @@ export function fc3d(surface, payload, context) {
   draw(surface, traces, baseLayout({
     margin: { l: 0, r: 0, t: 24, b: 0 },
     scene: {
-      xaxis: { title: payload.x_label, gridcolor: '#cfcfcf', backgroundcolor: '#ededed',
-               showbackground: true },
-      yaxis: { title: payload.y_label, gridcolor: '#cfcfcf', backgroundcolor: '#ededed',
-               showbackground: true },
-      zaxis: { title: payload.z_label, gridcolor: '#cfcfcf', backgroundcolor: '#ededed',
-               showbackground: true },
+      // Scene axis titles have to be objects: Plotly dropped the bare-string
+      // form, and a string is silently ignored, leaving the axes labelled
+      // "x", "y" and "z".
+      // x is log2 fold change, which is signed; retention time and m/z are
+      // not, and the desktop starts both at zero.
+      xaxis: { title: axisTitle(payload.x_label), gridcolor: '#cfcfcf',
+               backgroundcolor: '#ededed', showbackground: true },
+      yaxis: { title: axisTitle(payload.y_label), gridcolor: '#cfcfcf',
+               backgroundcolor: '#ededed', showbackground: true,
+               rangemode: 'tozero' },
+      zaxis: { title: axisTitle(payload.z_label), gridcolor: '#cfcfcf',
+               backgroundcolor: '#ededed', showbackground: true,
+               rangemode: 'tozero' },
     },
-  }));
+  }), imageFormat('fc3d'));
 
   onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }

@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MPACT Web</title>
-  <!-- Inline so no /favicon.ico request is made (and 404s) at all. -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23232323'/%3E%3Ccircle cx='11' cy='20' r='3' fill='%2326a69a'/%3E%3Ccircle cx='19' cy='13' r='3' fill='%23d4d4d4'/%3E%3Ccircle cx='24' cy='22' r='2.5' fill='%2326a69a'/%3E%3C/svg%3E">
+  <title>MPACT - Metabolomics Peak Analysis Computational Tool</title>
+  <!-- The desktop application's own icon, copied byte for byte from
+       mpact/icontranscolorless_L50_icon.ico. -->
+  <link rel="icon" href="/favicon.ico" sizes="48x48">
   <link rel="stylesheet" href="/styles/app.css">
   <!-- Plotly renders every chart. Loaded from cdnjs by default; run
        scripts/fetch_web_vendor.py to vendor it into /vendor for an
@@ -27,8 +28,9 @@
 <body>
   <div id="app">
     <header class="titlebar">
+      <img class="app-icon" src="/assets/mpact-icon.png" alt="">
       <div class="brand">M<span>PACT</span></div>
-      <div class="muted" style="font-size:12px">Metabolomics Pipeline &amp; Analysis</div>
+      <div class="muted" style="font-size:12px">Metabolomics Peak Analysis Computational Tool</div>
       <div class="spacer"></div>
       <div id="run-chip" class="run-chip">No analysis</div>
       <button class="btn small" id="btn-runs">Runs</button>
@@ -38,6 +40,8 @@
       <nav class="sidebar" id="sidebar"></nav>
       <main class="main" id="main"></main>
     </div>
+
+    <div id="statusbar-host"></div>
   </div>
 
   <div class="toast-host" id="toasts"></div>

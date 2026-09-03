@@ -11,7 +11,7 @@
  * the mass-defect guidelines toggle, and the volcano's p/q and fold-change
  * thresholds. */
 
-import { registerView, showView } from '../app.js';
+import { registerView } from '../app.js';
 import { api } from '../api.js';
 import { store } from '../state.js';
 import { clear, el, num, select, toast, debounce } from '../util.js';
@@ -21,7 +21,7 @@ import { volcano as drawVolcano } from '../plots/volcano.js';
 import { dendrogram as drawDendrogram, heatmap as drawHeatmap, samplecorr as drawSamplecorr } from '../plots/matrix.js';
 import { ordination as drawOrdination } from '../plots/ordination.js';
 import { abundance, cvplot, treemap, upset } from '../plots/review.js';
-import { createDetailsRail } from './detailsrail.js';
+import { createNavbar } from '../plots/navbar.js';
 import { buildFeatureInfoView } from './featureinfo.js';
 import { buildDownloadsView } from './downloads.js';
 
@@ -34,7 +34,10 @@ function plotContext() {
   return {
     selectedFeature: store.get('selectedFeature'),
     onSelectFeature: (compound) => store.set({ selectedFeature: compound }),
-    onSelectSample: (name) => toast(`Sample: ${name}`, 'info', 2600),
+    // Picking an ordination point selects an injection/sample. It goes to
+    // the status bar, which stays on screen, rather than a toast that has
+    // vanished by the time you look for it.
+    onSelectSample: (name) => store.set({ selectedSample: name }),
   };
 }
 
@@ -52,10 +55,20 @@ function plotPanel(spec) {
   const state = { ...(spec.initial || {}) };
   let payload = null;
 
+  // Two bars, as the desktop has: the plot's own switcher bar across the top
+  // of the graphing window (what is being plotted, and how), and matplotlib's
+  // navigation toolbar in a strip directly under the canvas (how you move
+  // around it and save it). The caption sits below both.
   const toolbar = el('div', { class: 'plot-toolbar' });
   const surface = el('div', { class: `plot-surface ${spec.tall ? 'tall' : ''}` });
   const footer = el('div', { class: 'plot-footer' });
-  const node = el('div', { class: 'plot-panel' }, [toolbar, surface, footer]);
+  const navbar = createNavbar(surface, {
+    onClearSelection: () => store.set({ selectedFeature: null, selectedSample: null }),
+    isSelectionActive: () => Boolean(store.get('selectedFeature')),
+  });
+  const canvas = el('div', { class: 'plot-canvas' },
+                    [toolbar, surface, navbar.node, footer]);
+  const node = el('div', { class: 'plot-panel' }, [canvas]);
 
   const status = el('span', { class: 'status' });
 
@@ -67,6 +80,15 @@ function plotPanel(spec) {
     } catch (error) {
       console.error(error);
       message(surface, `Could not draw this plot: ${error.message}`, 'error');
+    } finally {
+      // The toolbar reflects whatever is on the surface now: the drag mode,
+      // whether this is a 3D scene, and whether anything is selected.
+      navbar.sync();
+      // The caption is written *after* the plot is drawn (a volcano's counts
+      // come out of drawing it), and a two-line caption is 50px the plot no
+      // longer has. Plotly only reflows on demand, so without this the axis
+      // labels spill over the toolbar below.
+      requestAnimationFrame(() => resize());
     }
   };
 
@@ -84,6 +106,7 @@ function plotPanel(spec) {
       payload = null;
       status.textContent = '';
       message(surface, error.message, 'error');
+      navbar.sync();
     }
   };
 
@@ -97,7 +120,7 @@ function plotPanel(spec) {
     // surface then owns the full rounded border on its own.
     const bare = !controls.length;
     toolbar.classList.toggle('hidden', bare);
-    surface.classList.toggle('no-toolbar', bare);
+    canvas.classList.toggle('no-toolbar', bare);
   }
 
   buildToolbar();
@@ -110,6 +133,7 @@ function plotPanel(spec) {
   };
 
   return { node, load: fetchAndDraw, redraw, resize, surface,
+           syncNav: navbar.syncEnabled,
            get payload() { return payload; } };
 }
 
@@ -117,7 +141,7 @@ function plotPanel(spec) {
 const control = (label, node) => el('label', {}, [el('span', { text: label }), node]);
 
 /** Build a view made of sub-tabs, each holding one plot panel. */
-function tabbedView({ id, label, group, requires, tabs, rail = true }) {
+function tabbedView({ id, label, group, requires, tabs }) {
   const node = el('div', { class: 'plot-view' });
   const header = el('div', { class: 'btn-row tab-header', style: { marginBottom: '12px' } });
   const panelHost = el('div', { class: 'plot-panel-host',
@@ -128,10 +152,6 @@ function tabbedView({ id, label, group, requires, tabs, rail = true }) {
   const panels = new Map();
   for (const tab of tabs) panels.set(tab.id, tab.build());
 
-  // The details rail is shared by every tab in this view.
-  const details = rail ? createDetailsRail(() => showView('features')) : null;
-  if (details) host.append(details.node);
-
   const showTab = (tabId) => {
     activeTab = tabId;
     for (const button of header.children) {
@@ -139,7 +159,6 @@ function tabbedView({ id, label, group, requires, tabs, rail = true }) {
     }
     clear(panelHost).append(panels.get(tabId).node);
     panels.get(tabId).load();
-    if (details) details.render();
   };
 
   for (const tab of tabs) {
@@ -149,17 +168,17 @@ function tabbedView({ id, label, group, requires, tabs, rail = true }) {
     }));
   }
 
-  node.append(el('h2', { text: label }));
+  // No title strip: the view is named in the navigation bar on the left, and
+  // repeating it above the plot only costs the plot vertical space.
   if (tabs.length > 1) node.append(header);
   node.append(host);
 
-  // A selection made anywhere updates the highlight and the rail here -- the
-  // desktop's cross-plot highlight. Only the visible view redraws; the others
-  // pick the selection up when they are next shown.
+  // A selection made anywhere updates the highlight here -- the desktop's
+  // cross-plot highlight. Only the visible view redraws; the others pick the
+  // selection up when they are next shown.
   store.on('selectedFeature', () => {
     if (!node.classList.contains('active')) return;
     panels.get(activeTab)?.redraw();
-    if (details) details.render();
   });
 
   // Plotly only reflows on demand, so a resized window would otherwise leave
@@ -172,7 +191,7 @@ function tabbedView({ id, label, group, requires, tabs, rail = true }) {
   });
 
   return {
-    id, label, group, requiresRun: true, node,
+    id, label, group, requiresRun: true, node, rail: true,
     hidden: () => {
       if (!requires) return false;
       const catalogue = store.get('catalogue');
@@ -256,7 +275,7 @@ function summaryPanel() {
         el('div', { class: 'plot-legend' }, payload.feature_sets.map((set) =>
           el('div', { class: 'item' }, [
             el('span', { class: 'swatch', style: { background: set.colour } }),
-            el('span', { text: `${set.name} — ${set.count.toLocaleString()} features` }),
+            el('span', { text: `${set.name}: ${set.count.toLocaleString()} features` }),
           ]))),
       ]));
     }
@@ -282,14 +301,9 @@ function dataReviewView() {
       { id: 'summary', label: 'Summary', build: summaryPanel },
       {
         id: 'quality', label: 'Feature plot',
-        build: () => plotPanel({
-          plot: 'quality', render: quality,
-          footer: (payload) => el('div', { class: 'plot-legend' }, payload.series.map((series) =>
-            el('div', { class: 'item' }, [
-              el('span', { class: 'swatch', style: { background: series.colour } }),
-              el('span', { text: `${series.name} (${series.count.toLocaleString()})` }),
-            ]))),
-        }),
+        // No caption legend: the plot draws its own key inside the axes,
+        // where matplotlib puts it.
+        build: () => plotPanel({ plot: 'quality', render: quality }),
       },
       {
         id: 'treemap', label: 'Tree map',
@@ -403,18 +417,19 @@ function multivariateView() {
       id: 'ordination', label: 'Multivariate',
       build: () => plotPanel({
         plot: 'ordination', tall: true,
-        initial: { method: 'PCA', view: 'Scores', collapse_replicates: false },
+        initial: { method: 'PCA', view: 'Scores', replicates: 'Individual Injections' },
         options: (state) => ({ ...state, selected_feature: store.get('selectedFeature') }),
         controls: (state, actions, payload) => [
           control('Method', select(payload ? payload.methods : ['PCA'], state.method,
                                    (value) => { state.method = value; actions.fetchAndDraw(); })),
           control('View', select(payload ? payload.views : ['Scores'], state.view,
                                  (value) => { state.view = value; actions.fetchAndDraw(); })),
-          el('label', { class: 'check' }, [
-            el('input', { type: 'checkbox', checked: state.collapse_replicates,
-                          on: { change: (e) => { state.collapse_replicates = e.target.checked; actions.fetchAndDraw(); } } }),
-            el('span', { text: 'Average technical replicates' }),
-          ]),
+          // A named choice rather than a "collapse" checkbox: it says what
+          // you get instead of what it does to something unnamed.
+          control('Points', select(payload ? payload.replicate_views
+                                           : ['Individual Injections'],
+                                   state.replicates,
+                                   (value) => { state.replicates = value; actions.fetchAndDraw(); })),
         ],
         render: drawOrdination,
         footer: (payload) => {
@@ -424,10 +439,11 @@ function multivariateView() {
           }
           const variance = payload.explained_variance || [];
           return el('p', { class: 'muted' }, [
+            `${payload.n_points} ${payload.point_noun} plotted · `,
             variance.length
-              ? `Explained variance: ${variance.slice(0, 4).map((v) => `${(100 * v).toFixed(1)}%`).join(', ')} · `
+              ? `explained variance ${variance.slice(0, 4).map((v) => `${(100 * v).toFixed(1)}%`).join(', ')} · `
               : '',
-            'Ellipses are 2σ confidence regions per biological group.',
+            'ellipses are 2σ confidence regions per biological group.',
           ]);
         },
       }),
@@ -445,11 +461,6 @@ function scatterView({ id, label, plot, requires, render, extraControls }) {
         options: (state) => ({ guidelines: state.guidelines }),
         controls: extraControls,
         render,
-        footer: (payload) => el('div', { class: 'plot-legend' }, (payload.series || []).map((series) =>
-          el('div', { class: 'item' }, [
-            el('span', { class: 'swatch', style: { background: series.colour } }),
-            el('span', { text: `${series.name} (${series.count.toLocaleString()})` }),
-          ]))),
       }),
     }],
   });

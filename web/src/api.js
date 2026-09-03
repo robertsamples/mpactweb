@@ -55,15 +55,27 @@ export const api = {
   demoInfo: () => request('/api/files/demo'),
   loadDemo: () => json('POST', '/api/files/demo', {}),
 
-  /** Upload with progress. XHR rather than fetch: peak tables run to
-   *  hundreds of megabytes and fetch still has no upload-progress event. */
+  /** Open a saved .mpct session: the desktop's File > Open. Returns the
+   *  library records it created plus the settings to restore. */
+  importSession(file, onProgress) {
+    return this.postFile('/api/files/session', { file }, onProgress);
+  },
+
   uploadFile(kind, file, onProgress) {
+    return this.postFile('/api/files', { kind, file }, onProgress);
+  },
+
+  /** Post a multipart form with progress. XHR rather than fetch: peak tables
+   *  run to hundreds of megabytes and fetch still has no upload-progress
+   *  event. */
+  postFile(url, fields, onProgress) {
     return new Promise((resolve, reject) => {
       const form = new FormData();
-      form.append('kind', kind);
-      form.append('file', file);
+      for (const [key, value] of Object.entries(fields)) {
+        if (value !== null && value !== undefined) form.append(key, value);
+      }
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/files');
+      xhr.open('POST', url);
       xhr.withCredentials = true;
       xhr.upload.addEventListener('progress', (event) => {
         if (onProgress && event.lengthComputable) onProgress(event.loaded / event.total);

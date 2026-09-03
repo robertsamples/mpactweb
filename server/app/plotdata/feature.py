@@ -32,6 +32,21 @@ TABLE_COLUMNS = (
 )
 
 
+# Hard ceiling on rows in one response. A 5,000-feature study is ~700KB of
+# JSON, which is fine; this only stops a pathological table from being sent
+# in one piece.
+MAX_ROWS = 100_000
+
+
+def _reverse_text(text):
+    """Sort key that reverses lexicographic order for strings.
+
+    Python can't negate a string the way it negates a number, so descending
+    text order is expressed by inverting each code point.
+    """
+    return [-ord(ch) for ch in text]
+
+
 def _build_filters(spec):
     """Translate the request's filter spec into ``treefilters`` criteria.
 
@@ -57,21 +72,29 @@ def _build_filters(spec):
 
 
 def feature_table(results, options=None):
-    """Paged, filtered, sorted feature table.
+    """The feature table: filtered, sorted, and unpaged by default.
 
-    Unlike the desktop -- which loads every row into a Qt model and filters
-    in memory -- this pages, because the table has one row per feature and a
-    large study can have tens of thousands. Sorting and filtering happen
-    server-side over the full set so a page is a true window on the sorted
-    result, not just the visible slice re-sorted.
+    Sorting and filtering happen server-side over the whole set so the client
+    can hold a complete, correctly ordered list and still window the rows it
+    actually renders.
+
+    ``include_filtered`` (default false) is the "show filtered-out features"
+    switch. The desktop's tree lists only features that survived filtering --
+    it populates from ``hits >= 0``, and only surviving features are ever
+    searched -- so that is the default here too. The authority for "survived"
+    is the filtered peak table's own index rather than re-deriving it from the
+    ``pass_*`` columns, which would have to re-implement which filters were
+    enabled for this run.
     """
     options = options or {}
     iondict = results.iondict()
-    # The desktop shows only searched features (``hits >= 0``). Here the
-    # database search is a separate request, so an unsearched run still shows
-    # its features -- with 'hits' blank until a search has run.
-    if options.get('only_searched') and 'hits' in iondict:
-        iondict = iondict[iondict['hits'].notna()]
+
+    if not options.get('include_filtered', False):
+        try:
+            surviving = set(results.filtered(header=(2,), index_col=0).index.astype(str))
+            iondict = iondict[iondict['Compound'].astype(str).isin(surviving)]
+        except Exception:  # noqa: BLE001 - an unreadable filtered table shouldn't
+            pass          # empty the whole view; fall back to showing everything
 
     rows = [
         tuple(row.get(column['key']) for column in TABLE_COLUMNS)
@@ -82,27 +105,45 @@ def feature_table(results, options=None):
         rows = [row for row in rows if treefilters.row_passes(row, filters)]
 
     sort_key = options.get('sort')
+    descending = bool(options.get('descending'))
     if sort_key:
         keys = [column['key'] for column in TABLE_COLUMNS]
-        if sort_key in keys:
-            index = keys.index(sort_key)
-            numeric = TABLE_COLUMNS[index]['type'] == 'number'
+        if sort_key not in keys:
+            raise ValueError(f'cannot sort by {sort_key!r}; expected one of {", ".join(keys)}')
+        index = keys.index(sort_key)
+        numeric = TABLE_COLUMNS[index]['type'] == 'number'
 
-            def sort_value(row):
-                value = row[index]
-                if numeric:
-                    try:
-                        number = float(value)
-                    except (TypeError, ValueError):
-                        return np.inf
-                    return np.inf if np.isnan(number) else number
-                return str(value or '').lower()
+        # Blanks always sort last, in both directions. Mapping them to +inf
+        # (the obvious shortcut) parks every unsearched feature at the *top*
+        # of a descending sort -- which is exactly how "sort by Hits" came to
+        # show nothing but "--" and looked like a broken database search.
+        def sort_key_for(row):
+            value = row[index]
+            if numeric:
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    return (1, 0.0)
+                if np.isnan(number):
+                    return (1, 0.0)
+                return (0, -number if descending else number)
+            text = '' if value is None else str(value)
+            if not text:
+                return (1, '')
+            return (0, _reverse_text(text.lower()) if descending else text.lower())
 
-            rows.sort(key=sort_value, reverse=bool(options.get('descending')))
+        # Sorting ascending on an already-direction-aware key keeps the
+        # blanks-last group in place regardless of direction.
+        rows.sort(key=sort_key_for)
 
     total = len(rows)
     offset = max(0, int(options.get('offset', 0)))
-    limit = max(1, min(int(options.get('limit', 200)), 2000))
+    # limit=0 means "every row" -- the feature table is shown unpaged, the way
+    # the desktop's tree is, so keyboard navigation can run through the whole
+    # dataset. The ceiling is a transport guard, not a page size.
+    requested = int(options.get('limit', 0) or 0)
+    limit = total if requested <= 0 else requested
+    limit = min(limit, MAX_ROWS)
     page = rows[offset:offset + limit]
 
     return {
@@ -112,6 +153,8 @@ def feature_table(results, options=None):
         'total': total,
         'offset': offset,
         'limit': limit,
+        'include_filtered': bool(options.get('include_filtered', False)),
+        'searched': bool('hits' in iondict.columns and iondict['hits'].notna().any()),
         'categories': treefilters.distinct_category_tokens(
             iondict['groups'].fillna('').tolist()) if 'groups' in iondict else [],
     }
@@ -140,7 +183,12 @@ def abundance(results, compound):
     """
     filtered = results.filtered(header=(0, 1, 2), index_col=0)
     if str(compound) not in filtered.index.astype(str):
-        raise ValueError(f'feature {compound!r} did not pass filtering in this run')
+        # Not an error: only filtered features have per-injection abundances,
+        # and most features in a run don't survive filtering.
+        return {'plot': 'abundance', 'feature': str(compound), 'found': False,
+                'reason': 'This feature did not pass filtering, so it has no '
+                          'per-injection abundances.',
+                'groups': [], 'points': []}
 
     row = filtered.iloc[:, 2:].loc[str(compound)].reset_index()
     row.columns = ['biolgroup', 'sample', 'injection', 'abundance']
@@ -159,6 +207,7 @@ def abundance(results, compound):
     return {
         'plot': 'abundance',
         'feature': str(compound),
+        'found': True,
         'groups': [
             {
                 'name': str(group),

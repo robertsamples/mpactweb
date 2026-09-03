@@ -6,7 +6,8 @@
  * as an SVG path so Plotly can rotate it. */
 
 import { num } from '../util.js';
-import { axisTitle, baseLayout, draw, highlightTrace, message, onSelect } from './base.js';
+import { AXIS, axisTitle, baseLayout, draw, highlightTrace, imageFormat,
+         message, onSelect } from './base.js';
 
 /** Rotated ellipse as an SVG path -- Plotly's shape ellipse has no rotation,
  *  so the outline is sampled and transformed here. */
@@ -58,10 +59,10 @@ function scores(surface, payload, context) {
 
   draw(surface, traces, baseLayout({
     title: payload.title ? { text: payload.title, font: { size: 13 } } : undefined,
-    xaxis: { ...baseLayout().xaxis, title: axisTitle(payload.x_label), zeroline: true },
-    yaxis: { ...baseLayout().yaxis, title: axisTitle(payload.y_label), zeroline: true },
+    xaxis: { ...AXIS, title: axisTitle(payload.x_label) },
+    yaxis: { ...AXIS, title: axisTitle(payload.y_label) },
     shapes,
-  }));
+  }), imageFormat('ordination'));
 
   // Selecting a point here selects an injection/sample, not a feature -- the
   // desktop shows it in the "Injection/Sample" label rather than driving the
@@ -104,11 +105,11 @@ function loadings(surface, payload, context) {
   draw(surface, traces, baseLayout({
     title: payload.title ? { text: payload.title, font: { size: 13 } } : undefined,
     annotations,
-    xaxis: { ...baseLayout().xaxis, title: axisTitle(payload.x_label),
-             range: payload.range, zeroline: true, zerolinecolor: '#999' },
-    yaxis: { ...baseLayout().yaxis, title: axisTitle(payload.y_label),
-             range: payload.range, zeroline: true, zerolinecolor: '#999' },
-  }));
+    xaxis: { ...AXIS, title: axisTitle(payload.x_label), range: payload.range,
+             zeroline: true, zerolinecolor: '#999' },
+    yaxis: { ...AXIS, title: axisTitle(payload.y_label), range: payload.range,
+             zeroline: true, zerolinecolor: '#999' },
+  }), imageFormat('ordination-loadings'));
 
   onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }

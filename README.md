@@ -68,12 +68,18 @@ The workflow is the desktop's, tab for tab:
    vs RT, Mass Defect, 3D Fold Change, Volcano, Heatmap, Feature Info,
    Downloads.
 
-Every plot fills the window, carries a pan/zoom/save toolbar, and has a
-details rail alongside it: click a point and that feature's m/z, retention
-time, fold change, CV and per-group abundance appear immediately, without
-leaving the tab. Selecting a feature anywhere — a scatter point, a heatmap
-cell, a table row — selects it everywhere, the same cross-plot highlight the
-desktop has.
+Every plot fills the window and carries a pan/zoom/save toolbar. Beside it is
+a details rail — click a point and that feature's m/z, retention time, fold
+change, CV, per-group abundance and MS2 spectrum appear without leaving the
+tab. The rail's sections collapse individually, the boundary between it and
+the plot is draggable, and the whole rail folds away for a full-width plot.
+
+The selected feature and injection stay in the status bar along the bottom,
+and selecting a feature anywhere — a scatter point, a heatmap cell, a table
+row — selects it everywhere, the same cross-plot highlight the desktop has.
+
+Feature Info lists every feature at once (no paging) with the detail pane
+below it; the arrow keys walk the list.
 
 Every output file the desktop writes is downloadable, **including the
 `.mpct` session file**, so an analysis run in the browser can be opened in

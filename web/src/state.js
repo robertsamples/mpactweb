@@ -28,6 +28,7 @@ const initial = () => ({
   runs: [],
   catalogue: null,          // /plots response for the active run
   selectedFeature: null,
+  selectedSample: null,
   view: 'files',
 });
 

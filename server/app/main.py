@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title='MPACT Web',
+    title='MPACT - Metabolomics Peak Analysis Computational Tool',
     description='Web front end for the MPACT metabolomics pipeline',
     version='1.0.0',
     lifespan=lifespan,
@@ -78,6 +78,9 @@ async def unhandled_error(request: Request, exc: Exception):
 if config.WEB_ROOT.is_dir():
     app.mount('/src', StaticFiles(directory=config.WEB_ROOT / 'src'), name='src')
     app.mount('/styles', StaticFiles(directory=config.WEB_ROOT / 'styles'), name='styles')
+    assets_dir = config.WEB_ROOT / 'assets'
+    if assets_dir.is_dir():
+        app.mount('/assets', StaticFiles(directory=assets_dir), name='assets')
     vendor_dir = config.WEB_ROOT / 'vendor'
     if vendor_dir.is_dir():
         app.mount('/vendor', StaticFiles(directory=vendor_dir), name='vendor')

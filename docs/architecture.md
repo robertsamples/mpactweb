@@ -134,7 +134,8 @@ plot that quietly diverges.
 | Volcano thresholds re-render server-side | Re-classified in the browser | Same rule, no round trip — dragging a threshold is instant. |
 | `PvClust(..., parallel=True)` | `parallel=False` | Each request already competes for cores with other sessions; the bootstrap result is identical. |
 | Hit counts filled when the Feature Info tab first opens | Explicit "Search NPAtlas" button | It costs seconds and loads a 33MB table; plenty of runs never need it. Same `dbsearch.search_npatlas` call. |
-| Feature table held entirely in a Qt model | Paged, filtered and sorted server-side | One row per feature, and a large study has tens of thousands. Filtering still uses the vendored `treefilters` rules. |
+| Feature table held entirely in a Qt model | Unpaged, but windowed: filtering/sorting server-side, only the visible rows in the DOM | The whole list has to be reachable by arrow key, as it is on the desktop, but a full DOM table of tens of thousands of rows makes every keystroke stutter. Filtering still uses the vendored `treefilters` rules. |
+| "Collapse Replicates" checkbox on the ordination tab | A named **Points** choice (Individual Injections / Biological Replicates) | Same two states and the same `load_ordination_matrix` call; a checkbox only says what it does if you already know what it collapses. The point count is printed under the plot so the state is verifiable. |
 | Feature identity in main-window labels plus a Details dialog | A details rail beside every plot | It fills on click with identity, statistics and a per-group abundance chart, so a picked point is interpretable without changing tabs. |
 | Fixed-size plot canvases | Plots fill the window and reflow on resize | A browser window is not a fixed-size Qt frame, and a fixed slab leaves dead space on a tall screen. |
 

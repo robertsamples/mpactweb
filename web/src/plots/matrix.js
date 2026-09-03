@@ -7,7 +7,8 @@
  * feature dendrogram on the left, column dendrogram on top, matrix filling
  * the rest. */
 
-import { axisTitle, baseLayout, draw, message } from './base.js';
+import { store } from '../state.js';
+import { AXIS, axisTitle, baseLayout, draw, imageFormat, message } from './base.js';
 
 /* seaborn colormap names offered by the desktop's colour dropdowns, mapped
  * to Plotly-compatible colorscales. 'rocket' and 'mako' aren't built into
@@ -25,7 +26,7 @@ export const colorscale = (name) => COLORSCALES[name] || COLORSCALES.rocket;
 
 /** Convert scipy dendrogram icoord/dcoord segment pairs into a single
  *  Plotly line trace, using nulls to break between segments. */
-function dendrogramTrace(icoord, dcoord, colours, orientation, axisIds) {
+function dendrogramTrace(icoord, dcoord, colours, orientation, axisIds, hover) {
   const x = [];
   const y = [];
   const line = { color: '#333', width: 1 };
@@ -38,13 +39,19 @@ function dendrogramTrace(icoord, dcoord, colours, orientation, axisIds) {
     const colour = (colours && colours[i]) || '#333';
     const segX = orientation === 'top' ? across : height;
     const segY = orientation === 'top' ? height : across;
+    const text = hover ? hover(i) : null;
     traces.push({
       type: 'scatter',
       mode: 'lines',
       x: segX,
       y: segY,
       line: { ...line, color: colour },
-      hoverinfo: 'skip',
+      // Without hover text a dendrogram gives no feedback at all: you can see
+      // the shape but never read a merge height off it.
+      hoverinfo: text ? 'text' : 'skip',
+      hoveron: 'points+fills',
+      text: text ? segX.map(() => text) : undefined,
+      hovertemplate: text ? '%{text}<extra></extra>' : undefined,
       showlegend: false,
       xaxis: axisIds.x,
       yaxis: axisIds.y,
@@ -94,11 +101,28 @@ export function heatmap(surface, payload, context) {
   // hides feature (row) tick labels for the same reason.
   const showColumnLabels = cols <= 60;
 
+  // Yellow outline on the selected feature's row -- the web form of the
+  // desktop's `parent.highlight['heatmap']` line artist. Rows are one unit
+  // tall in category coordinates, so the band spans idx +/- 0.5.
+  const selectedRow = payload.features.indexOf(context.selectedFeature);
+  const shapes = [];
+  if (selectedRow !== -1) {
+    shapes.push({
+      type: 'rect', xref: 'x', yref: 'y',
+      x0: -0.5, x1: cols - 0.5,
+      y0: selectedRow - 0.5, y1: selectedRow + 0.5,
+      line: { color: '#f2d024', width: 2 }, fillcolor: 'rgba(0,0,0,0)',
+      layer: 'above',
+    });
+  }
+
   draw(surface, traces, baseLayout({
     margin: { l: 74, r: 90, t: 12, b: showColumnLabels ? 140 : 40 },
     showlegend: false,
+    shapes,
     xaxis: {
       domain: [0.1, 1], anchor: 'y', showgrid: false, zeroline: false,
+      showline: true, mirror: true, linecolor: '#3c3c3c',
       tickmode: showColumnLabels ? 'array' : 'auto',
       tickvals: showColumnLabels ? payload.columns.map((_, i) => i) : undefined,
       ticktext: showColumnLabels ? payload.columns : undefined,
@@ -106,13 +130,14 @@ export function heatmap(surface, payload, context) {
     },
     yaxis: {
       domain: [0, 0.88], anchor: 'x', showgrid: false, zeroline: false,
+      showline: true, mirror: true, linecolor: '#3c3c3c',
       showticklabels: false, title: axisTitle('Feature'),
     },
     xaxis2: { domain: [0, 0.095], anchor: 'y', showgrid: false, zeroline: false,
               showticklabels: false, autorange: 'reversed' },
     yaxis2: { domain: [0.89, 1], anchor: 'x', showgrid: false, zeroline: false,
               showticklabels: false },
-  }));
+  }), imageFormat('heatmap'));
 
   if (surface._plotly && surface.on) {
     surface.removeAllListeners?.('plotly_click');
@@ -123,6 +148,23 @@ export function heatmap(surface, payload, context) {
       if (feature) context.onSelectFeature(feature);
     });
   }
+
+  // Step through features in the clustered row order with the arrow keys or
+  // W/S -- the desktop binds W/S to `mv_heatmap`, which walks the same
+  // reordered index. The surface has to be focusable to receive them.
+  surface.tabIndex = 0;
+  if (surface._heatmapKeys) surface.removeEventListener('keydown', surface._heatmapKeys);
+  surface._heatmapKeys = (event) => {
+    const step = { ArrowDown: 1, s: 1, S: 1, ArrowUp: -1, w: -1, W: -1 }[event.key];
+    if (step === undefined) return;
+    event.preventDefault();
+    const current = payload.features.indexOf(store.get('selectedFeature'));
+    const next = current === -1
+      ? (step > 0 ? 0 : payload.features.length - 1)
+      : Math.max(0, Math.min(payload.features.length - 1, current + step));
+    context.onSelectFeature(payload.features[next]);
+  };
+  surface.addEventListener('keydown', surface._heatmapKeys);
 }
 
 export function samplecorr(surface, payload) {
@@ -145,11 +187,10 @@ export function samplecorr(surface, payload) {
     title: { text: payload.method, font: { size: 13 } },
     margin: { l: showLabels ? 130 : 50, r: 40, t: 40, b: showLabels ? 130 : 50 },
     showlegend: false,
-    xaxis: { ...baseLayout().xaxis, tickangle: -90, showgrid: false,
-             showticklabels: showLabels, tickfont: { size: 10 } },
-    yaxis: { ...baseLayout().yaxis, autorange: 'reversed', showgrid: false,
-             showticklabels: showLabels, tickfont: { size: 10 } },
-  }));
+    xaxis: { ...AXIS, tickangle: -90, showticklabels: showLabels, tickfont: { size: 10 } },
+    yaxis: { ...AXIS, autorange: 'reversed', showticklabels: showLabels,
+             tickfont: { size: 10 } },
+  }), imageFormat('samplecorr'));
 }
 
 export function dendrogram(surface, payload) {
@@ -157,8 +198,41 @@ export function dendrogram(surface, payload) {
     message(surface, 'Not enough leaves to build a dendrogram.');
     return;
   }
-  const traces = dendrogramTrace(payload.icoord, payload.dcoord, payload.link_colours,
-                                 'top', { x: 'x', y: 'y' });
+  const PURITY_MEANING = {
+    green: 'every leaf below shares one group',
+    magenta: 'this merge splits a group apart',
+  };
+  const traces = dendrogramTrace(
+    payload.icoord, payload.dcoord, payload.link_colours, 'top', { x: 'x', y: 'y' },
+    (i) => {
+      const height = payload.dcoord[i][1];
+      const colour = payload.link_colours ? payload.link_colours[i] : null;
+      const meaning = PURITY_MEANING[colour];
+      const bootstrap = payload.bootstrap_values && payload.link_order
+        ? payload.bootstrap_values[payload.link_order[i]] : null;
+      return [
+        `Merge distance: ${height.toFixed(4)}`,
+        meaning ? meaning : null,
+        bootstrap ? `AU ${Math.round(bootstrap.au * 100)} / BP ${Math.round(bootstrap.bp * 100)}`
+                  : null,
+      ].filter(Boolean).join('<br>');
+    });
+
+  // An invisible marker per leaf, so hovering a leaf names it (and its group)
+  // rather than showing nothing.
+  const leafPositionsForHover = payload.leaves.map((_, index) => 5 + index * 10);
+  traces.push({
+    type: 'scatter', mode: 'markers',
+    x: leafPositionsForHover,
+    y: payload.leaves.map(() => 0),
+    marker: { size: 12, color: 'rgba(0,0,0,0)' },
+    text: payload.leaves.map((name, i) => {
+      const group = (payload.leaf_groups || {})[name];
+      return `<b>${payload.labels[i]}</b>${group ? `<br>${group}` : ''}`;
+    }),
+    hovertemplate: '%{text}<extra></extra>',
+    showlegend: false,
+  });
 
   // Bootstrap AU/BP values sit at each merge's apex, the same annotation the
   // desktop's PvClust plot writes above every node.
@@ -184,10 +258,13 @@ export function dendrogram(surface, payload) {
     showlegend: false,
     annotations,
     xaxis: {
-      ...baseLayout().xaxis, showgrid: false, zeroline: false,
+      ...AXIS,
       tickmode: 'array', tickvals: leafPositions, ticktext: payload.labels,
       tickangle: -90, tickfont: { size: Math.max(7, Math.min(11, 420 / payload.leaves.length)) },
     },
-    yaxis: { ...baseLayout().yaxis, title: axisTitle('Distance'), zeroline: false },
-  }));
+    // Distances start at zero: scipy's dendrogram pins the bottom of the
+    // axis to 0, so leaves sit on the axis line rather than floating
+    // above a negative stub of padding.
+    yaxis: { ...AXIS, title: axisTitle('Distance'), rangemode: 'tozero' },
+  }), imageFormat('dendrogram'));
 }

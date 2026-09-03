@@ -221,6 +221,90 @@ def test_feature_detail_and_abundance(client, completed_run):
     assert table['total'] > 0
 
 
+def test_feature_table_is_unpaged_by_default(client, completed_run):
+    """The table is shown in full, the way the desktop's tree is -- limit 0
+    means every row, so keyboard navigation can reach the whole dataset."""
+    body = client.post(f'/api/runs/{completed_run}/features', json={'limit': 0}).json()
+    assert len(body['rows']) == body['total'] > 0
+
+
+def test_blank_values_sort_last_in_both_directions(client, completed_run):
+    """A feature with no value for the sort column belongs at the bottom
+    whichever way you sort. Mapping blanks to +inf instead parks every
+    unsearched feature at the top of a descending sort, which is how "sort by
+    Hits" once looked like a broken database search."""
+    for descending in (True, False):
+        body = client.post(f'/api/runs/{completed_run}/features',
+                           json={'limit': 0, 'sort': 'hits',
+                                 'descending': descending}).json()
+        hits = [row[-1] for row in body['rows']]
+        blanks = [i for i, value in enumerate(hits) if value is None]
+        present = [i for i, value in enumerate(hits) if value is not None]
+        if blanks and present:
+            assert min(blanks) > max(present),                 f'blank hits are not last with descending={descending}'
+
+
+def test_unknown_sort_column_is_reported(client, completed_run):
+    """A silently ignored sort key means the table just looks unsorted."""
+    response = client.post(f'/api/runs/{completed_run}/features',
+                           json={'sort': 'Hits'})     # label, not key
+    assert response.status_code == 422
+    assert 'cannot sort by' in response.json()['detail']
+
+
+def test_ordination_replicate_views_differ(client, completed_run):
+    """Individual Injections plots every injection; Biological Replicates
+    averages technical replicates per sample and must therefore have strictly
+    fewer points."""
+    def points(replicates):
+        body = client.post(f'/api/runs/{completed_run}/plots/ordination',
+                           json={'method': 'PCA', 'view': 'Scores',
+                                 'replicates': replicates})
+        assert body.status_code == 200, body.text
+        payload = body.json()
+        return payload['n_points'], sum(len(s['x']) for s in payload['series'])
+
+    injections, plotted_injections = points('Individual Injections')
+    samples, plotted_samples = points('Biological Replicates')
+    assert injections > samples > 0
+    assert plotted_injections > plotted_samples > 0
+
+
+def test_ordination_rejects_an_unknown_replicate_view(client, completed_run):
+    response = client.post(f'/api/runs/{completed_run}/plots/ordination',
+                           json={'replicates': 'Every Third Tuesday'})
+    assert response.status_code == 422
+
+
+def test_database_search_finds_matches(client, completed_run):
+    """The NPAtlas search has to actually populate hit counts -- an empty
+    Hits column is indistinguishable from a broken search."""
+    response = client.post(f'/api/runs/{completed_run}/dbsearch')
+    if response.status_code == 503:
+        pytest.skip('npatlas.tsv is not installed on this server')
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['searched'] > 0
+    assert body['matched'] > 0, 'no feature matched the atlas at all'
+
+    # ...and those counts have to reach the table.
+    table = client.post(f'/api/runs/{completed_run}/features',
+                        json={'limit': 20, 'sort': 'hits', 'descending': True,
+                              'only_searched': True}).json()
+    top = [row[-1] for row in table['rows']]
+    assert top[0] and top[0] > 0, f'top of a hits-descending sort is {top[:5]}'
+
+
+def test_upset_reports_set_totals(client, completed_run):
+    """The classic UpSet layout needs per-set totals for its left-hand bars,
+    not just the intersection sizes."""
+    body = client.post(f'/api/runs/{completed_run}/plots/upset', json={}).json()
+    assert body['categories']
+    assert set(body['totals']) == set(body['categories'])
+    assert all(body['totals'][name] >= 0 for name in body['categories'])
+    assert sum(body['totals'].values()) > 0
+
+
 def test_unknown_plot_is_404(client, completed_run):
     assert client.post(f'/api/runs/{completed_run}/plots/nope', json={}).status_code == 404
 
