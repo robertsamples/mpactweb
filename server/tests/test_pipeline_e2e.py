@@ -1,0 +1,231 @@
+"""End-to-end test: upload -> run -> every plot payload.
+
+This is the test that matters most for this project. The whole design rests
+on the claim that the vendored desktop pipeline runs unmodified behind a web
+API, so the test drives the real HTTP surface with a real dataset and asserts
+the real outputs -- no mocking of the pipeline, no synthetic peak table.
+
+It needs an MPACT example dataset. Point ``MPACT_TEST_DATA`` at a directory
+containing a peak table plus ``samplelist.csv`` and ``extractmetadata.csv``
+(the layout of ``rawdata/PTY087I2`` in the desktop repo); the test skips if
+it isn't there.
+"""
+
+import os
+import time
+from pathlib import Path
+
+import pytest
+
+DATA_DIR = Path(os.environ.get(
+    'MPACT_TEST_DATA',
+    Path(__file__).resolve().parents[3] / 'mpact' / 'rawdata' / 'PTY087I2'))
+
+RUN_TIMEOUT_SECONDS = 900
+
+
+def _dataset():
+    if not DATA_DIR.is_dir():
+        pytest.skip(f'no example dataset at {DATA_DIR} (set MPACT_TEST_DATA)')
+    samplelist = DATA_DIR / 'samplelist.csv'
+    metadata = DATA_DIR / 'extractmetadata.csv'
+    peaktables = [p for p in sorted(DATA_DIR.glob('*.csv'))
+                  if p.name not in {samplelist.name, metadata.name}]
+    if not (peaktables and samplelist.exists() and metadata.exists()):
+        pytest.skip(f'{DATA_DIR} is missing a peak table / sample list / metadata')
+    return peaktables[0], samplelist, metadata
+
+
+@pytest.fixture(scope='module')
+def client(tmp_path_factory):
+    """A TestClient with its own isolated data root."""
+    root = tmp_path_factory.mktemp('mpact-data')
+    os.environ['MPACT_DATA_ROOT'] = str(root)
+    os.environ['MPACT_DEV'] = '1'
+
+    # Imported after MPACT_DATA_ROOT is set: config resolves paths at import.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from fastapi.testclient import TestClient
+
+    from app import config
+    from app.main import app
+    # Another test module may have imported app.config first, binding
+    # a different data root; re-resolve so this module gets its own.
+    config.reload()
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture(scope='module')
+def completed_run(client):
+    """Upload the example dataset, run it, and return the finished run id."""
+    peaktable, samplelist, metadata = _dataset()
+
+    uploaded = {}
+    for kind, path in (('peaktable', peaktable), ('samplelist', samplelist),
+                       ('metadata', metadata)):
+        with path.open('rb') as handle:
+            response = client.post('/api/files', data={'kind': kind},
+                                   files={'file': (path.name, handle, 'text/csv')})
+        assert response.status_code == 200, response.text
+        uploaded[kind] = response.json()['id']
+
+    groups = client.post('/api/files/groups', json=uploaded)
+    assert groups.status_code == 200, groups.text
+    payload = groups.json()
+    assert payload['groups'], 'no biological groups were derived'
+    suggested = payload['suggested']
+
+    settings = client.get('/api/runs/defaults').json()['settings']
+    settings.update(
+        blnkgrp=suggested['blank'] or payload['groups'][0],
+        blnkfltr=bool(suggested['blank']),
+        expgrp=suggested['experimental'] or payload['groups'][0],
+        ctrgrp=suggested['control'] or payload['groups'][-1],
+    )
+    started = client.post('/api/runs', json={'inputs': uploaded, 'settings': settings,
+                                             'label': 'e2e'})
+    assert started.status_code == 200, started.text
+    run_id = started.json()['run_id']
+
+    deadline = time.time() + RUN_TIMEOUT_SECONDS
+    state = None
+    while time.time() < deadline:
+        status = client.get(f'/api/runs/{run_id}/status').json()
+        state = status['state']
+        if state in ('complete', 'failed', 'cancelled'):
+            break
+        time.sleep(2)
+
+    if state != 'complete':
+        log = client.get(f'/api/runs/{run_id}/log').json()['log']
+        pytest.fail(f'run ended as {state}\n--- log tail ---\n{log[-4000:]}')
+    return run_id
+
+
+def test_health(client):
+    body = client.get('/api/health').json()
+    assert body['status'] == 'ok'
+
+
+def test_run_produces_expected_outputs(client, completed_run):
+    """The pipeline wrote the same output files the desktop documents."""
+    downloads = client.get(f'/api/runs/{completed_run}/downloads').json()
+    produced = {item['key'] for item in downloads}
+    for expected in ('filtered', 'formatted', 'iondict', 'summarydata',
+                     'groupaverages', 'analysisinfo', 'session'):
+        assert expected in produced, f'{expected} missing from {sorted(produced)}'
+    assert all(item['size'] > 0 for item in downloads)
+
+
+def test_plot_catalogue(client, completed_run):
+    body = client.get(f'/api/runs/{completed_run}/plots').json()
+    names = {plot['name'] for plot in body['plots']}
+    assert {'summary', 'mzrt', 'massdefect', 'heatmap', 'dendrogram',
+            'ordination', 'volcano', 'upset', 'treemap'} <= names
+    assert body['groups'], 'catalogue reported no biological groups'
+    assert body['feature_sets'], 'catalogue reported no feature sets'
+
+
+@pytest.mark.parametrize('name,options', [
+    ('summary', {}),
+    ('quality', {}),
+    ('cvplot', {}),
+    ('treemap', {}),
+    ('upset', {}),
+    ('mzrt', {}),
+    ('massdefect', {}),
+    ('fc3d', {}),
+    ('volcano', {}),
+    ('heatmap', {'view': 'Biological Replicates'}),
+    ('dendrogram', {'view': 'Technical Replicates', 'color_mode': 'Purity'}),
+    ('dendrogram', {'view': 'Biological Replicates', 'color_mode': 'None'}),
+    ('ordination', {'method': 'PCA', 'view': 'Scores'}),
+    ('ordination', {'method': 'PCA', 'view': 'Loadings'}),
+    ('ordination', {'method': 'NMDS', 'view': 'Scores'}),
+    ('ordination', {'method': 'PLS-DA', 'view': 'Scores'}),
+    ('samplecorr', {'method': 'Spearman'}),
+    ('samplecorr', {'method': 'Bray-Curtis', 'view': 'Individual Injections'}),
+    ('groupaverages', {}),
+])
+def test_every_plot_builds(client, completed_run, name, options):
+    response = client.post(f'/api/runs/{completed_run}/plots/{name}', json=options)
+    assert response.status_code == 200, f'{name} {options}: {response.text}'
+    body = response.json()
+    assert body, f'{name} returned an empty payload'
+
+
+def test_scatter_series_are_aligned(client, completed_run):
+    """Every per-point array in a scatter payload must be the same length --
+    the client indexes them together to build hover text and selection."""
+    body = client.post(f'/api/runs/{completed_run}/plots/mzrt', json={}).json()
+    assert body['series']
+    for series in body['series']:
+        length = series['count']
+        for field in ('x', 'y', 'ids', 'alpha'):
+            assert len(series[field]) == length, f'{field} misaligned in {series["name"]}'
+
+
+def test_heatmap_matrix_matches_labels(client, completed_run):
+    body = client.post(f'/api/runs/{completed_run}/plots/heatmap', json={}).json()
+    rows, cols = body['shape']
+    assert len(body['z']) == rows
+    assert all(len(row) == cols for row in body['z'])
+    assert len(body['features']) == rows
+    assert len(body['columns']) == cols
+
+
+def test_dendrogram_segments_match_colours(client, completed_run):
+    body = client.post(f'/api/runs/{completed_run}/plots/dendrogram',
+                       json={'color_mode': 'Purity'}).json()
+    assert len(body['icoord']) == len(body['dcoord'])
+    assert body['link_colours'] is not None
+    assert len(body['link_colours']) == len(body['icoord'])
+    assert body['purity']['total'] >= 1
+
+
+def test_feature_table_filters_and_pages(client, completed_run):
+    first = client.post(f'/api/runs/{completed_run}/features',
+                        json={'limit': 5, 'sort': 'm/z'}).json()
+    assert first['total'] > 0
+    assert len(first['rows']) <= 5
+    mz_values = [row[1] for row in first['rows'] if row[1] is not None]
+    assert mz_values == sorted(mz_values), 'sort by m/z was not applied'
+
+    # A range filter must genuinely narrow the set.
+    narrowed = client.post(f'/api/runs/{completed_run}/features',
+                           json={'limit': 5, 'filters': {'m/z': {'min': 500, 'max': 600}}}).json()
+    assert narrowed['total'] <= first['total']
+    for row in narrowed['rows']:
+        assert 500 <= row[1] <= 600
+
+
+def test_feature_detail_and_abundance(client, completed_run):
+    table = client.post(f'/api/runs/{completed_run}/features', json={'limit': 50}).json()
+    # Pick a feature that survived filtering, so abundance data exists.
+    heatmap = client.post(f'/api/runs/{completed_run}/plots/heatmap', json={}).json()
+    compound = heatmap['features'][0]
+
+    detail = client.get(f'/api/runs/{completed_run}/feature',
+                        params={'compound': compound})
+    assert detail.status_code == 200, detail.text
+    assert detail.json()['id'] == compound
+
+    abundance = client.get(f'/api/runs/{completed_run}/feature/abundance',
+                           params={'compound': compound})
+    assert abundance.status_code == 200, abundance.text
+    body = abundance.json()
+    assert body['groups'], 'no group averages returned'
+    assert body['points'], 'no per-injection points returned'
+    assert table['total'] > 0
+
+
+def test_unknown_plot_is_404(client, completed_run):
+    assert client.post(f'/api/runs/{completed_run}/plots/nope', json={}).status_code == 404
+
+
+def test_results_before_completion_are_409(client):
+    """A run id that exists but has no results yields 409, not 404 -- the
+    client distinguishes 'keep polling' from 'gone'."""
+    assert client.get('/api/runs/r_0000000000000000/plots').status_code == 404

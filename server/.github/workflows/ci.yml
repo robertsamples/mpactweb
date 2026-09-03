@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: server/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r server/requirements-dev.txt
+
+      # Fails if any vendored MPACT module was edited in place. This is the
+      # project's central invariant, so it runs before anything else.
+      - name: Verify vendored core is unmodified
+        run: python scripts/vendor_core.py verify
+
+      # The end-to-end test needs an MPACT example dataset, which isn't in
+      # this repo; it skips without one. The rest of the suite always runs.
+      - name: Run tests
+        working-directory: server
+        run: python -m pytest tests/ -q
+
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image
+        run: docker build -t mpactweb:ci .
+      - name: Smoke-test the container
+        run: |
+          docker run -d --name mpactweb-ci -p 8000:8000 mpactweb:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/health; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs mpactweb-ci
+          docker rm -f mpactweb-ci
+          test -n "$ok"

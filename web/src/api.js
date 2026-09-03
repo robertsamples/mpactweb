@@ -1,0 +1,112 @@
+/* Thin wrapper over the JSON API.
+ *
+ * Every call funnels through `request`, which turns a non-2xx response into a
+ * thrown Error carrying the server's `detail` string. The server always
+ * answers /api/ routes with JSON (see main.unhandled_error), so callers can
+ * show the real cause -- "blank filtering is on but no blank group was
+ * selected" -- instead of a generic failure. */
+
+export class ApiError extends Error {
+  constructor(message, status, body) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function request(url, options = {}) {
+  let response;
+  try {
+    response = await fetch(url, { credentials: 'same-origin', ...options });
+  } catch (cause) {
+    throw new ApiError('Could not reach the server. Is it still running?', 0, null);
+  }
+
+  const type = response.headers.get('content-type') || '';
+  let body = null;
+  if (type.includes('application/json')) {
+    body = await response.json().catch(() => null);
+  } else if (!response.ok) {
+    body = { detail: await response.text().catch(() => response.statusText) };
+  }
+
+  if (!response.ok) {
+    const detail = (body && (body.detail || body.message)) || response.statusText;
+    throw new ApiError(typeof detail === 'string' ? detail : JSON.stringify(detail),
+                       response.status, body);
+  }
+  return body;
+}
+
+const json = (method, url, payload) => request(url, {
+  method,
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload ?? {}),
+});
+
+export const api = {
+  health: () => request('/api/health'),
+
+  // --- library ---------------------------------------------------------
+  listFiles: () => request('/api/files'),
+  deleteFile: (id) => request(`/api/files/${id}`, { method: 'DELETE' }),
+  groupsFor: (inputs) => json('POST', '/api/files/groups', inputs),
+  demoInfo: () => request('/api/files/demo'),
+  loadDemo: () => json('POST', '/api/files/demo', {}),
+
+  /** Upload with progress. XHR rather than fetch: peak tables run to
+   *  hundreds of megabytes and fetch still has no upload-progress event. */
+  uploadFile(kind, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append('kind', kind);
+      form.append('file', file);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/files');
+      xhr.withCredentials = true;
+      xhr.upload.addEventListener('progress', (event) => {
+        if (onProgress && event.lengthComputable) onProgress(event.loaded / event.total);
+      });
+      xhr.addEventListener('load', () => {
+        let body = null;
+        try { body = JSON.parse(xhr.responseText); } catch { /* non-JSON error page */ }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+        else reject(new ApiError((body && body.detail) || `Upload failed (${xhr.status})`,
+                                 xhr.status, body));
+      });
+      xhr.addEventListener('error', () => reject(new ApiError('Upload failed', 0, null)));
+      xhr.addEventListener('abort', () => reject(new ApiError('Upload cancelled', 0, null)));
+      xhr.send(form);
+    });
+  },
+
+  // --- runs ------------------------------------------------------------
+  defaults: () => request('/api/runs/defaults'),
+  listRuns: () => request('/api/runs'),
+  createRun: (payload) => json('POST', '/api/runs', payload),
+  runStatus: (id) => request(`/api/runs/${id}/status`),
+  runLog: (id) => request(`/api/runs/${id}/log`),
+  runRequest: (id) => request(`/api/runs/${id}/request`),
+  cancelRun: (id) => json('POST', `/api/runs/${id}/cancel`),
+  deleteRun: (id) => request(`/api/runs/${id}`, { method: 'DELETE' }),
+
+  // --- results ---------------------------------------------------------
+  catalogue: (id) => request(`/api/runs/${id}/plots`),
+  plot: (id, name, options) => json('POST', `/api/runs/${id}/plots/${name}`, options),
+  features: (id, options) => json('POST', `/api/runs/${id}/features`, options),
+  feature: (id, compound) =>
+    request(`/api/runs/${id}/feature?compound=${encodeURIComponent(compound)}`),
+  abundance: (id, compound) =>
+    request(`/api/runs/${id}/feature/abundance?compound=${encodeURIComponent(compound)}`),
+  spectrum: (id, compound) =>
+    request(`/api/runs/${id}/feature/spectrum?compound=${encodeURIComponent(compound)}`),
+  matches: (id, compound) =>
+    request(`/api/runs/${id}/feature/matches?compound=${encodeURIComponent(compound)}`),
+  dbsearch: (id) => json('POST', `/api/runs/${id}/dbsearch`, {}),
+  downloads: (id) => request(`/api/runs/${id}/downloads`),
+  downloadUrl: (id, key) => `/api/runs/${id}/downloads/${key}`,
+  downloadAllUrl: (id) => `/api/runs/${id}/downloads.zip`,
+  structureUrl: (id, smiles) =>
+    `/api/runs/${id}/structure?smiles=${encodeURIComponent(smiles)}`,
+};

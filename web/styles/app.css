@@ -1,0 +1,379 @@
+/* MPACT Web -- theme.
+   Palette taken from the desktop app's Qt stylesheets (ui_main.py): a dark
+   shell at rgb(35,35,35), panels at rgb(40,40,40), controls at rgb(75,75,75),
+   text at rgb(212,212,212) and muted labels at rgb(150,150,150), with the
+   teal accent from the MPACT documentation theme. Keeping these exact values
+   is why the web app reads as the same application rather than a lookalike. */
+
+:root {
+  --bg: #232323;
+  --panel: #282828;
+  --panel-2: #2f2f2f;
+  --control: #4b4b4b;
+  --control-hover: #5a5a5a;
+  --border: #3a3a3a;
+  --text: #d4d4d4;
+  --muted: #969696;
+  --accent: #26a69a;
+  --accent-dim: #1d7d74;
+  --danger: #e05252;
+  --warn: #d8a13a;
+  --ok: #4caf80;
+  --plot-bg: #e3e3e3;
+  --radius: 3px;
+  --sidebar-width: 208px;
+  --font: "Segoe UI", "Bahnschrift", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+
+/* Base look for text-like controls, so one outside a .field wrapper (the
+   feature-set name box, a plot toolbar's threshold box) doesn't fall back to
+   the browser default and read as disabled on a dark ground. */
+input[type="text"], input[type="number"], input[type="search"], select, textarea {
+  background: #1c1c1c; color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 7px;
+}
+input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
+  outline: 1px solid var(--accent); border-color: var(--accent);
+}
+input:disabled, select:disabled { opacity: .5; }
+input[type="color"] {
+  width: 34px; height: 24px; padding: 1px; background: #1c1c1c;
+  border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+}
+
+/* --- app shell ---------------------------------------------------------- */
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+.titlebar {
+  display: flex; align-items: center; gap: 12px;
+  height: 38px; padding: 0 14px;
+  background: #1b1b1b;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.titlebar .brand { font-weight: 700; letter-spacing: 1px; }
+.titlebar .brand span { color: var(--accent); }
+.titlebar .spacer { flex: 1; }
+.titlebar .run-chip {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 10px; border-radius: 12px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--muted); font-size: 12px;
+}
+.titlebar .run-chip.is-running { color: var(--warn); border-color: var(--warn); }
+.titlebar .run-chip.is-complete { color: var(--ok); border-color: var(--accent-dim); }
+.titlebar .run-chip.is-failed { color: var(--danger); border-color: var(--danger); }
+
+.body { display: flex; flex: 1; min-height: 0; }
+
+/* --- sidebar ------------------------------------------------------------ */
+
+.sidebar {
+  width: var(--sidebar-width); flex: 0 0 var(--sidebar-width);
+  background: #1e1e1e; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow-y: auto;
+}
+.sidebar .group-label {
+  padding: 14px 14px 6px; font-size: 11px; letter-spacing: 1.2px;
+  text-transform: uppercase; color: var(--muted);
+}
+.sidebar button {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 8px 14px; text-align: left;
+  background: none; border: none; border-left: 3px solid transparent;
+  color: var(--text); cursor: pointer;
+}
+.sidebar button:hover:not(:disabled) { background: var(--panel); }
+.sidebar button.active { background: var(--panel-2); border-left-color: var(--accent); }
+.sidebar button:disabled { color: #5e5e5e; cursor: not-allowed; }
+.sidebar button .badge {
+  margin-left: auto; font-size: 10px; color: var(--muted);
+  background: var(--panel-2); border-radius: 8px; padding: 1px 6px;
+}
+
+/* --- main --------------------------------------------------------------- */
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.view { flex: 1; overflow: auto; padding: 18px 22px 32px; display: none; }
+.view.active { display: block; }
+.view > h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+.view > .lede { margin: 0 0 18px; color: var(--muted); max-width: 70ch; }
+
+/* A plot view fills the window: the surface takes whatever height is left
+   after the heading, sub-tabs and footer, instead of being a fixed slab with
+   dead space under it. */
+.view.plot-view.active { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 14px; }
+.view.plot-view > h2 { flex: 0 0 auto; }
+.view.plot-view > .tab-header { flex: 0 0 auto; }
+.view.plot-view .plot-host { flex: 1; min-height: 0; display: flex; gap: 14px; }
+.view.plot-view .plot-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.view.plot-view .plot-panel .plot-surface { flex: 1; min-height: 240px; }
+.view.plot-view .plot-panel .plot-footer { flex: 0 0 auto; }
+/* Panels that are documents rather than charts (the Summary tab) scroll. */
+.view.plot-view .plot-panel.scrolls { overflow: auto; }
+
+/* --- panels / forms ----------------------------------------------------- */
+
+.panel {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+}
+.panel > h3 {
+  margin: 0 0 12px; font-size: 13px; font-weight: 600;
+  color: var(--text); display: flex; align-items: center; gap: 8px;
+}
+.panel > h3 .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
+
+.grid { display: grid; gap: 14px; }
+.grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.field label { color: var(--muted); font-size: 12px; }
+.field input[type="text"], .field input[type="number"], .field select, .field textarea {
+  background: #1c1c1c; border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 6px 8px; width: 100%;
+}
+.field input:focus, .field select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.field.inline { flex-direction: row; align-items: center; gap: 8px; }
+.field .suffix { color: var(--muted); font-size: 12px; }
+
+.check { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.check input { accent-color: var(--accent); width: 14px; height: 14px; }
+.check.disabled { opacity: .45; cursor: not-allowed; }
+
+.radio-row { display: flex; gap: 16px; padding: 4px 0 8px; }
+.radio-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.radio-row input { accent-color: var(--accent); }
+
+button.btn {
+  background: var(--control); border: 1px solid #565656; color: var(--text);
+  border-radius: var(--radius); padding: 6px 14px; cursor: pointer;
+}
+button.btn:hover:not(:disabled) { background: var(--control-hover); }
+button.btn:disabled { opacity: .5; cursor: not-allowed; }
+button.btn.primary { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+button.btn.primary:hover:not(:disabled) { background: var(--accent); }
+button.btn.danger:hover:not(:disabled) { background: #6b2c2c; border-color: var(--danger); }
+button.btn.small { padding: 3px 9px; font-size: 12px; }
+.btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* --- file slots --------------------------------------------------------- */
+
+.slot {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel-2); margin-bottom: 8px;
+}
+.slot.dragover { border-color: var(--accent); background: #2b3a38; }
+.slot .slot-name { width: 148px; flex: 0 0 148px; font-weight: 600; }
+.slot .slot-name small { display: block; font-weight: 400; color: var(--muted); }
+.slot .slot-value { flex: 1; min-width: 0; }
+.slot .slot-value .filename {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.slot .slot-value .empty { color: var(--muted); }
+.slot .slot-value .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.slot .slot-value .meta .bad { color: var(--danger); }
+.slot select {
+  max-width: 320px;
+  background: #1c1c1c; color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 7px;
+}
+/* Native select option lists are painted by the OS, which on a dark page can
+   render dark-on-dark; force both sides explicitly. */
+select option { background: #1c1c1c; color: var(--text); }
+
+/* --- groupset (Plot Feature Set) editor --------------------------------- */
+
+.groupsets { display: grid; grid-template-columns: 210px 1fr; gap: 14px; }
+.groupset-list { border: 1px solid var(--border); border-radius: var(--radius); background: #1c1c1c; }
+.groupset-list ul { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.groupset-list li {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer;
+  border-bottom: 1px solid #262626;
+}
+.groupset-list li:hover { background: var(--panel); }
+.groupset-list li.active { background: var(--panel-2); }
+.groupset-list li .swatch {
+  width: 12px; height: 12px; border-radius: 2px; border: 1px solid #666; flex: 0 0 12px;
+}
+.groupset-list li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.groupset-list .list-actions { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--border); }
+
+.group-buckets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.bucket { border: 1px solid var(--border); border-radius: var(--radius); background: #1c1c1c; min-height: 130px; }
+.bucket.dragover { border-color: var(--accent); }
+.bucket h4 { margin: 0; padding: 6px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
+.bucket ul { list-style: none; margin: 0; padding: 4px; min-height: 90px; }
+.bucket li {
+  padding: 4px 8px; margin-bottom: 3px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: var(--radius); cursor: grab;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bucket li.selected { border-color: var(--accent); background: #2b3a38; }
+
+/* --- plot surfaces ------------------------------------------------------ */
+
+.plot-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; background: var(--panel-2);
+  border: 1px solid var(--border); border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.plot-toolbar label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 5px; }
+.plot-toolbar select, .plot-toolbar input[type="number"], .plot-toolbar input[type="text"] {
+  background: #1c1c1c; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 3px 6px;
+}
+.plot-toolbar input[type="number"] { width: 78px; }
+.plot-toolbar .spacer { flex: 1; }
+.plot-toolbar .status { color: var(--muted); font-size: 12px; }
+
+.plot-surface {
+  background: var(--plot-bg); border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  min-height: 460px; position: relative;
+}
+.plot-surface.tall { min-height: 620px; }
+.plot-surface.no-toolbar { border-radius: var(--radius); }
+/* Plotly's mode bar is this app's matplotlib navigation toolbar. Pin it
+   visible and give it a solid ground so it reads as a toolbar rather than as
+   an overlay on the data. */
+.plot-surface .modebar {
+  background: rgba(255, 255, 255, .82) !important;
+  border: 1px solid #c4c4c4; border-radius: var(--radius);
+  padding: 1px 2px !important;
+}
+.plot-surface .modebar-btn path { fill: #444 !important; }
+.plot-surface .modebar-btn:hover path { fill: var(--accent-dim) !important; }
+
+.plot-surface .placeholder {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #555; text-align: center; padding: 20px;
+}
+.plot-surface .placeholder.error { color: #8c2f2f; }
+
+.plot-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 2px 0; }
+.plot-legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.plot-legend .swatch { width: 11px; height: 11px; border-radius: 2px; }
+
+/* --- tables ------------------------------------------------------------- */
+
+table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.data th, table.data td {
+  text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.data th { color: var(--muted); font-weight: 600; cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--panel); }
+table.data th .sort { color: var(--accent); }
+table.data tbody tr { cursor: pointer; }
+table.data tbody tr:hover { background: var(--panel-2); }
+table.data tbody tr.selected { background: #2b3a38; }
+table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-wrap { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+
+.stat-row { display: flex; gap: 24px; flex-wrap: wrap; }
+.stat { min-width: 120px; }
+.stat .value { font-size: 22px; font-weight: 600; }
+.stat .value.accent { color: var(--accent); }
+.stat .label { color: var(--muted); font-size: 12px; }
+
+/* --- misc --------------------------------------------------------------- */
+
+.log {
+  background: #141414; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.45;
+  padding: 10px; max-height: 340px; overflow: auto; white-space: pre-wrap;
+  color: #b9b9b9;
+}
+.notice {
+  padding: 9px 12px; border-radius: var(--radius); margin-bottom: 12px;
+  border-left: 3px solid var(--muted); background: var(--panel-2);
+}
+.notice.error { border-left-color: var(--danger); color: #f0b4b4; }
+.notice.warn { border-left-color: var(--warn); color: #e8cf9c; }
+.notice.ok { border-left-color: var(--ok); }
+.notice.info { border-left-color: var(--accent); }
+
+.progress { height: 4px; background: #1b1b1b; border-radius: 2px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--accent); width: 30%; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+
+.spinner {
+  width: 15px; height: 15px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .7s linear infinite; display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast-host { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.toast {
+  background: var(--panel-2); border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: var(--radius); padding: 10px 14px; max-width: 380px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .5);
+}
+.toast.error { border-left-color: var(--danger); }
+.toast.ok { border-left-color: var(--ok); }
+.toast.info { border-left-color: var(--accent); }
+
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); }
+.hidden { display: none !important; }
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+}
+
+/* Feature Info uses a split: table on the left, detail on the right. The
+   table carries seven columns, so it gets the larger share and tighter cell
+   padding -- otherwise the last column (Hits) is pushed into overflow. */
+.split { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.split table.data th, .split table.data td { padding: 5px 6px; }
+.split table.data th:first-child, .split table.data td:first-child { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1250px) { .split { grid-template-columns: 1fr; } }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+/* Details rail: the selected feature's identity beside the plot, so clicking
+   a point answers "what is this?" without leaving the tab. Mirrors the
+   desktop's feature labels + Details button. */
+.details-rail {
+  flex: 0 0 296px; width: 296px; overflow: auto;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px;
+}
+.details-rail.empty { display: flex; align-items: center; justify-content: center; }
+.details-rail h4 {
+  margin: 0 0 10px; font-size: 13px; font-weight: 600;
+  word-break: break-all; line-height: 1.35;
+}
+.details-rail .rail-head { display: flex; align-items: flex-start; gap: 8px; }
+.details-rail .rail-head button { margin-left: auto; flex: 0 0 auto; }
+.details-rail .mini-plot {
+  background: var(--plot-bg); border-radius: var(--radius);
+  height: 190px; margin-top: 12px;
+}
+.details-rail .rail-actions { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.details-rail .rail-actions .btn { width: 100%; }
+
+.structure { background: #fff; border-radius: var(--radius); padding: 6px; text-align: center; }
+.structure svg, .structure img { max-width: 100%; height: auto; }

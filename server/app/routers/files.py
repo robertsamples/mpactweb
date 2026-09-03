@@ -1,0 +1,182 @@
+"""Upload library: the web stand-in for the desktop's File Selection tab.
+
+Uploads are stored per session and reused across runs. That is the GNPS-style
+half of the design -- upload a peak table once, then re-select it for as many
+parameter sweeps as you like -- while the picker UX on top of it stays the
+desktop's four labelled slots.
+
+Every upload is inspected on arrival (format detection, column check, entry
+count) so mistakes surface at upload time rather than three tabs later.
+"""
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse
+
+import shutil
+
+from .. import config, demo, inspect as inspection, storage
+from ..deps import get_file, get_session
+from ..schemas import FileOut
+
+router = APIRouter(prefix='/api/files', tags=['files'])
+
+# Accepted extensions per slot. Peak tables are .csv (Progenesis / MZmine /
+# Metaboscape) or .txt (MS-DIAL alignment exports, which are tab separated).
+ALLOWED_SUFFIXES = {
+    'peaktable': {'.csv', '.txt'},
+    'samplelist': {'.csv'},
+    'metadata': {'.csv'},
+    'fragments': {'.msp', '.mgf'},
+}
+
+
+def _as_out(record):
+    return FileOut(id=record.id, kind=record.kind, name=record.name, size=record.size,
+                   uploaded_at=record.uploaded_at, fmt=record.fmt, detail=record.detail)
+
+
+@router.get('', response_model=list[FileOut])
+def list_files(session: storage.Session = Depends(get_session)):
+    """Everything in this session's library, newest first."""
+    return [_as_out(record) for record in
+            sorted(session.files(), key=lambda r: r.uploaded_at, reverse=True)]
+
+
+@router.post('', response_model=FileOut)
+async def upload_file(
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+    session: storage.Session = Depends(get_session),
+):
+    if kind not in storage.KINDS:
+        raise HTTPException(status_code=400,
+                            detail=f'kind must be one of {", ".join(storage.KINDS)}')
+
+    name = storage.safe_filename(file.filename)
+    suffix = ('.' + name.rsplit('.', 1)[-1].lower()) if '.' in name else ''
+    if suffix not in ALLOWED_SUFFIXES[kind]:
+        allowed = ', '.join(sorted(ALLOWED_SUFFIXES[kind]))
+        raise HTTPException(status_code=400,
+                            detail=f'a {kind} must be one of: {allowed} (got "{suffix or name}")')
+
+    record = session.add_file(kind=kind, name=name, size=0)
+    target = session.path_for(record)
+    written = 0
+    try:
+        with target.open('wb') as handle:
+            while chunk := await file.read(config.UPLOAD_CHUNK_BYTES):
+                written += len(chunk)
+                if written > config.MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f'upload exceeds the {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit')
+                handle.write(chunk)
+    except Exception:
+        # Never leave a half-written file in the library claiming to be usable.
+        session.remove_file(record.id)
+        raise
+
+    detail = inspection.inspect_file(session, record)
+    record = session.update_file(record.id, size=written, detail=detail,
+                                 fmt=detail.get('format'))
+    return _as_out(record)
+
+
+@router.delete('/{file_id}')
+def delete_file(file_id: str, session: storage.Session = Depends(get_session)):
+    """Remove a library file. Runs already started keep their own copies."""
+    if not session.remove_file(file_id):
+        raise HTTPException(status_code=404, detail=f'file {file_id} not found')
+    return {'deleted': file_id}
+
+
+@router.get('/{file_id}/download')
+def download_file(file_id: str, session: storage.Session = Depends(get_session)):
+    record = get_file(session, file_id)
+    return FileResponse(session.path_for(record), filename=record.name,
+                        media_type='application/octet-stream')
+
+
+@router.get('/demo')
+def demo_info():
+    """Whether the bundled demo dataset is installed, and what it contains."""
+    return {
+        'available': demo.available(),
+        'missing': demo.missing(),
+        **demo.DESCRIPTION,
+    }
+
+
+@router.post('/demo', response_model=list[FileOut])
+def load_demo(session: storage.Session = Depends(get_session)):
+    """Copy the demo dataset into this session's library.
+
+    Copied rather than referenced, so the demo behaves exactly like an upload
+    from here on -- re-selectable, re-runnable, and deletable -- and so a run
+    still converts its own copy of the peak table without touching the
+    pristine bundled one.
+
+    Calling it twice returns the existing entries instead of duplicating
+    them, so a double click doesn't fill the library with copies.
+    """
+    if not demo.available():
+        raise HTTPException(
+            status_code=503,
+            detail=f'the demo dataset is not installed on this server '
+                   f'(missing: {", ".join(demo.missing())})')
+
+    existing = {(record.kind, record.name): record for record in session.files()}
+    loaded = []
+    for kind, filename in demo.DEMO_FILES:
+        already = existing.get((kind, storage.safe_filename(filename)))
+        if already is not None:
+            loaded.append(already)
+            continue
+        source = demo.source_path(filename)
+        record = session.add_file(kind=kind, name=filename, size=source.stat().st_size)
+        shutil.copy2(source, session.path_for(record))
+        detail = inspection.inspect_file(session, record)
+        loaded.append(session.update_file(record.id, detail=detail, fmt=detail.get('format')))
+
+    return [_as_out(record) for record in loaded]
+
+
+@router.post('/groups')
+def biological_groups(
+    payload: dict,
+    response: Response,
+    session: storage.Session = Depends(get_session),
+):
+    """Biological groups for a peak table + sample list + metadata triple.
+
+    Called as soon as all three slots are filled, to populate the blank /
+    experimental / control pickers and the Plot Feature Set editor -- the same
+    moment ``MainWindow.getgroups`` runs on the desktop.
+    """
+    peaktable = get_file(session, payload.get('peaktable', ''), 'peaktable')
+    samplelist = get_file(session, payload.get('samplelist', ''), 'samplelist')
+    metadata = get_file(session, payload.get('metadata', ''), 'metadata')
+
+    try:
+        groups, unresolved, warnings = inspection.biological_groups(
+            session, peaktable, samplelist, metadata)
+    except ValueError as exc:
+        # The pipeline's own "Data read failure: Check input files" message --
+        # nearly always a Sample_Code/Injection column mismatch.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422,
+                            detail=f'could not derive biological groups: {exc}') from exc
+
+    if unresolved:
+        warnings = list(warnings) + [
+            f'{len(unresolved)} injection(s) missing from metadata -- the '
+            'biological group list may be incomplete']
+
+    return {
+        'groups': [str(group) for group in groups],
+        'unresolved': unresolved[:50],
+        'unresolved_total': len(unresolved),
+        'warnings': warnings,
+        'suggested': inspection.suggest_groups(groups),
+    }

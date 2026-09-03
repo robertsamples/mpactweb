@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MPACT Web</title>
+  <!-- Inline so no /favicon.ico request is made (and 404s) at all. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23232323'/%3E%3Ccircle cx='11' cy='20' r='3' fill='%2326a69a'/%3E%3Ccircle cx='19' cy='13' r='3' fill='%23d4d4d4'/%3E%3Ccircle cx='24' cy='22' r='2.5' fill='%2326a69a'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles/app.css">
+  <!-- Plotly renders every chart. Loaded from cdnjs by default; run
+       scripts/fetch_web_vendor.py to vendor it into /vendor for an
+       air-gapped deployment, which this loader prefers when present. -->
+  <script>
+    (function loadPlotly() {
+      var local = document.createElement('script');
+      local.src = '/vendor/plotly.min.js';
+      local.onerror = function () {
+        var cdn = document.createElement('script');
+        cdn.src = 'https://cdnjs.cloudflare.com/ajax/libs/plotly.js/4.0.0/plotly.min.js';
+        cdn.onerror = function () { window.__plotlyFailed = true; };
+        document.head.appendChild(cdn);
+      };
+      document.head.appendChild(local);
+    })();
+  </script>
+</head>
+<body>
+  <div id="app">
+    <header class="titlebar">
+      <div class="brand">M<span>PACT</span></div>
+      <div class="muted" style="font-size:12px">Metabolomics Pipeline &amp; Analysis</div>
+      <div class="spacer"></div>
+      <div id="run-chip" class="run-chip">No analysis</div>
+      <button class="btn small" id="btn-runs">Runs</button>
+    </header>
+
+    <div class="body">
+      <nav class="sidebar" id="sidebar"></nav>
+      <main class="main" id="main"></main>
+    </div>
+  </div>
+
+  <div class="toast-host" id="toasts"></div>
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>

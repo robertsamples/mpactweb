@@ -1,0 +1,30 @@
+services:
+  mpactweb:
+    build: .
+    image: mpactweb:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # Uploads and analysis outputs. Named so they survive `docker compose
+      # down` -- a user's runs are real work, not scratch.
+      - mpact-data:/data
+      # The NPAtlas table. Populate it once with:
+      #   docker compose run --rm mpactweb python /app/scripts/fetch_reference_data.py
+      - mpact-reference:/reference
+    environment:
+      # Raise for a machine with more cores; each job is its own process and
+      # a large peak table can use several GB.
+      MPACT_MAX_CONCURRENT_JOBS: "2"
+      MPACT_JOB_TIMEOUT_SECONDS: "3600"
+      MPACT_MAX_UPLOAD_BYTES: "536870912"
+      # Sessions (uploads + runs) older than this are pruned at startup.
+      MPACT_SESSION_MAX_AGE_SECONDS: "2592000"
+      # Turn on behind HTTPS so the session cookie is only sent over TLS.
+      MPACT_SESSION_COOKIE_SECURE: "false"
+      # Leave off in production: it puts exception detail in API responses.
+      MPACT_DEV: "false"
+    restart: unless-stopped
+
+volumes:
+  mpact-data:
+  mpact-reference:

@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Feb 20 22:19:37 2023
+
+@author: rsamples
+"""
+import pickle
+import os
+import io
+import pandas as pd
+
+
+def convert_to_msp(ionfilter_obj, analysis_params):
+    """
+    Convert ionfilter object to .msp file format.
+
+    Parameters:
+    - ionfilter_obj: ionfilter object
+        Object containing information about the ions to be extracted
+    - analysis_params: analysis_params object
+        Object containing information about the location and properties of the input file and output directory
+
+    Returns:
+    None
+
+    Behavior:
+    - Reads the input csv file and extracts the relevant data
+    - Writes a .msp file containing the relevant data from the ionfilter object
+    """
+    
+    msdata = round(pd.read_csv(analysis_params.filename, sep = ',', header = [0,1,2], index_col = [0]).iloc[:,2:].transpose().mean(), 4)
+    ionmerge = ionfilter_obj.merge
+    with open(str(analysis_params.outputdir / (analysis_params.filename.stem + '.msp')), 'w') as f:
+        keys = list(ionfilter_obj.merge.keys())
+        for precursor in keys:
+            if 'Da' in ionmerge[precursor].target:
+                mass = ionmerge[precursor].target.split(' ')[0]
+            else:
+                mass = ionmerge[precursor].target.split('_')[1].strip('m/z').strip('n')
+            f.write('Name: Unknown (' + ionmerge[precursor].target + ')\n')  # MSP file requires a name field, but it can be left empty
+            f.write('Charge:\n')  # MSP file requires a formula field, but it can be left empty
+            f.write('Precursor: ' + mass + '\n')  # MSP file requires a formula field, but it can be left empty
+            f.write('Comment: ' + ionmerge[precursor].target + '\n')  # MSP file requires a formula field, but it can be left empty
+            sources = ionmerge[precursor].sources
+            # Num peaks must equal the total number of fragment lines actually
+            # written below (the nested loop emits one line per fragment across
+            # every sublist). The previous ``numpeaks = len(frags)`` overwrote
+            # rather than accumulated, so it only reported the last sublist's
+            # length; identical for the sole live caller (decon, where
+            # ``sources == [[frag, ...]]`` is a single sublist) but wrong for any
+            # multi-sublist merge. ``sum`` makes the count correct by construction.
+            numpeaks = sum(len(frags) for frags in sources)
+            f.write('Num peaks: ' + str(numpeaks) + '\n')  # Number of peaks
+            for frags in sources:
+                for fragment in frags:
+                    if 'Da' in ionmerge[precursor].target:
+                        f.write(fragment.split(' ')[0] + ' ' + str(msdata.loc[fragment]) + '\n')  # Write each source fragment
+                    else:
+                        f.write(fragment.split('_')[1].strip('m/z').strip('n') + ' ' + str(msdata.loc[fragment]) + '\n')  # Write each source fragment
+            f.write('\n')  # MSP file requires a name field, but it can be left empty
+            
+        f.close()

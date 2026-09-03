@@ -1,0 +1,37 @@
+# --- runtime data --------------------------------------------------------
+# Uploaded files, analysis outputs and session state. Everything under here
+# is user data produced at runtime; none of it belongs in the repo.
+server/var/
+
+# --- reference data ------------------------------------------------------
+# npatlas.tsv is ~33MB and is fetched, not committed.
+server/data/*.tsv
+server/data/*.db
+
+# --- vendored browser libraries -----------------------------------------
+# Plotly is loaded from a CDN by default; scripts/fetch_web_vendor.py drops a
+# local copy here for offline/air-gapped deployments.
+web/vendor/*.js
+web/vendor/*.map
+
+# --- python --------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- node (only used for the browser-driven UI tests) --------------------
+node_modules/
+package-lock.json
+
+# --- editors / OS --------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
