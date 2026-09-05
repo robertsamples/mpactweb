@@ -214,7 +214,9 @@ export function upset(surface, payload, context, options = {}) {
       name: 'Intersection size',
       x: rows.map((_, i) => i),
       y: rows.map((row) => row.size),
-      marker: { color: '#26a69a' },
+      // Black, like every UpSet plot (and the desktop's): the accent colour
+      // means "selected" everywhere else in this app.
+      marker: { color: '#1c1c1c' },
       text: rows.map((row) => `${row.size}`),
       textposition: 'outside',
       textfont: { size: 9, color: '#333' },
@@ -344,38 +346,38 @@ export function abundance(surface, payload, options = {}) {
     xaxis: 'x2', yaxis: 'y2',
   }));
 
-  if (compact) {
-    // In the rail there is room for one panel, not two. The per-group means
-    // with their propagated error are the half that answers "is this feature
-    // different between groups"; the per-injection strip needs the width it
-    // gets in the full Feature Info view to be readable at all.
-    draw(surface, [{ ...bars, xaxis: 'x', yaxis: 'y' }], baseLayout({
-      margin: { l: 46, r: 10, t: 10, b: 54 },
-      showlegend: false,
-      xaxis: { tickangle: -40, tickfont: { size: 9 }, automargin: false },
-      yaxis: { rangemode: 'tozero', tickfont: { size: 9 }, gridcolor: '#dedede' },
-    }), { displayModeBar: false });
-    return;
-  }
-
+  // Both panels, at both sizes: the desktop's abundance window is a bar chart
+  // of group means beside a per-sample strip of every injection, and dropping
+  // the strip in the rail threw away the half that shows the spread within a
+  // group. The rail just gets smaller type and tighter margins.
   draw(surface, [bars, ...strips], baseLayout({
-    margin: { l: 62, r: 16, t: 16, b: 110 },
+    margin: compact ? { l: 40, r: 6, t: 8, b: 74 } : { l: 62, r: 16, t: 16, b: 110 },
     showlegend: false,
-    xaxis: { domain: [0, 0.42], anchor: 'y', tickangle: -45, tickfont: { size: 10 } },
+    xaxis: { domain: [0, 0.42], anchor: 'y', tickangle: compact ? -90 : -45,
+             tickfont: { size: compact ? 8 : 10 } },
     yaxis: { domain: [0, 1], anchor: 'x', rangemode: 'tozero',
-             title: axisTitle('Abundance'), tickfont: { size: 12 } },
-    xaxis2: { domain: [0.5, 1], anchor: 'y2', tickangle: -90, tickfont: { size: 9 },
+             title: compact ? undefined : axisTitle('Abundance'),
+             tickfont: { size: compact ? 8 : 12 },
+             // The desktop shares one y limit across both panels
+             // (`ylims = (0, ax[1].get_ylim()[1] * 1.05)`).
+             gridcolor: '#dedede' },
+    xaxis2: { domain: [0.5, 1], anchor: 'y2', tickangle: -90,
+              tickfont: { size: compact ? 7 : 9 },
               categoryorder: 'array', categoryarray: samples },
     yaxis2: { domain: [0, 1], anchor: 'x2', matches: 'y', showticklabels: false,
               rangemode: 'tozero' },
-  }));
+  }), compact ? { displayModeBar: false } : {});
 }
 
-export function spectrum(surface, payload) {
+export function spectrum(surface, payload, options = {}) {
   if (!payload.found || !payload.mz.length) {
     message(surface, 'No MS2 spectrum for this feature in the loaded fragment database.');
     return;
   }
+  // The rail passes {compact: true}; the parameter was missing, so every one
+  // of the `compact ? ... : ...` reads below threw ReferenceError and the
+  // panel showed "compact is not defined" instead of a spectrum.
+  const compact = Boolean(options.compact);
   // Stick spectrum: one zero-anchored vertical per fragment, the direct
   // equivalent of the desktop's ax.vlines call.
   const x = [];

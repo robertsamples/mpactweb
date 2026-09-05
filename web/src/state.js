@@ -29,6 +29,7 @@ const initial = () => ({
   catalogue: null,          // /plots response for the active run
   selectedFeature: null,
   selectedSample: null,
+  selectedSampleGroup: null,   // biological group of the picked injection
   view: 'files',
 });
 

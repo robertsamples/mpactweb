@@ -5,8 +5,12 @@
  * `lbl_injname`). This is that: a persistent readout rather than a toast
  * that disappears before you have read it.
  *
- * It listens to the store, so it fills in no matter where the selection was
- * made -- a scatter point, a heatmap cell, a table row.
+ * What it shows follows what the open view actually selects. The feature
+ * plots and the table pick features, so they get the feature's identity; the
+ * ordination and the sample correlations pick an injection (the desktop only
+ * updates `lbl_injname` from those), so they get the injection and the
+ * biological group it belongs to. Carrying both sets everywhere would leave
+ * half the bar stale on every view.
  */
 
 import { api } from '../api.js';
@@ -14,6 +18,9 @@ import { store } from '../state.js';
 import { clear, el, num } from '../util.js';
 
 const runId = () => (store.get('run') || {}).run_id;
+
+// Views whose click target is an injection rather than a feature.
+const SAMPLE_VIEWS = new Set(['multivariate', 'groupanalysis']);
 
 export function createStatusBar() {
   const node = el('footer', { class: 'statusbar' });
@@ -24,12 +31,18 @@ export function createStatusBar() {
     el('span', { class: `value ${kind}`.trim(), text: value }),
   ];
 
-  const render = async (detail) => {
+  const render = (detail) => {
+    const sampleView = SAMPLE_VIEWS.has(store.get('view'));
     const compound = store.get('selectedFeature');
     const sample = store.get('selectedSample');
     clear(node);
 
-    if (!compound) {
+    if (sampleView) {
+      const group = store.get('selectedSampleGroup');
+      if (group) node.append(...slot('Group:', group));
+      node.append(...slot('Injection/Sample:', sample || 'none selected',
+                          sample ? '' : 'none'));
+    } else if (!compound) {
       node.append(...slot('Feature:', 'none selected', 'none'));
     } else if (!detail) {
       node.append(...slot('Feature:', compound, 'feature'));
@@ -41,16 +54,16 @@ export function createStatusBar() {
         node.append(...slot('RT:', num(f['Retention time (min)'], 3)));
       }
       if (f.fc != null) node.append(...slot('FC:', num(f.fc, 3)));
-      if (f.groups) node.append(...slot('Groups:', String(f.groups).trim()));
     }
 
-    if (sample) node.append(...slot('Injection/Sample:', sample));
-
     node.append(el('span', { class: 'spacer' }));
-    if (compound || sample) {
+    const anything = sampleView ? sample : compound;
+    if (anything) {
       node.append(el('button', {
         type: 'button', text: 'Clear selection', title: 'Deselect',
-        on: { click: () => store.set({ selectedFeature: null, selectedSample: null }) },
+        on: { click: () => store.set(sampleView
+          ? { selectedSample: null, selectedSampleGroup: null }
+          : { selectedFeature: null }) },
       }));
     }
   };
@@ -62,7 +75,7 @@ export function createStatusBar() {
     // Draw the id straight away, then fill in the numbers when they arrive --
     // the bar should never lag behind the click.
     render(null);
-    if (!compound || !id) return;
+    if (SAMPLE_VIEWS.has(store.get('view')) || !compound || !id) return;
     try {
       const detail = await api.feature(id, compound);
       if (mine === token) render(detail);
@@ -72,7 +85,8 @@ export function createStatusBar() {
     }
   };
 
-  store.on(['selectedFeature', 'selectedSample', 'run'], refresh);
+  store.on(['selectedFeature', 'selectedSample', 'selectedSampleGroup', 'run', 'view'],
+           refresh);
   refresh();
   return { node, refresh };
 }

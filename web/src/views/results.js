@@ -20,7 +20,7 @@ import { fc3d, massdefect, mzrt, quality } from '../plots/scatter.js';
 import { volcano as drawVolcano } from '../plots/volcano.js';
 import { dendrogram as drawDendrogram, heatmap as drawHeatmap, samplecorr as drawSamplecorr } from '../plots/matrix.js';
 import { ordination as drawOrdination } from '../plots/ordination.js';
-import { abundance, cvplot, treemap, upset } from '../plots/review.js';
+import { cvplot, treemap, upset } from '../plots/review.js';
 import { createNavbar } from '../plots/navbar.js';
 import { buildFeatureInfoView } from './featureinfo.js';
 import { buildDownloadsView } from './downloads.js';
@@ -33,11 +33,14 @@ const runId = () => (store.get('run') || {}).run_id;
 function plotContext() {
   return {
     selectedFeature: store.get('selectedFeature'),
+    selectedSample: store.get('selectedSample'),
     onSelectFeature: (compound) => store.set({ selectedFeature: compound }),
     // Picking an ordination point selects an injection/sample. It goes to
     // the status bar, which stays on screen, rather than a toast that has
-    // vanished by the time you look for it.
-    onSelectSample: (name) => store.set({ selectedSample: name }),
+    // vanished by the time you look for it. The series it came from is the
+    // injection's biological group, which the bar shows beside it.
+    onSelectSample: (name, group) =>
+      store.set({ selectedSample: name, selectedSampleGroup: group || null }),
   };
 }
 
@@ -63,8 +66,9 @@ function plotPanel(spec) {
   const surface = el('div', { class: `plot-surface ${spec.tall ? 'tall' : ''}` });
   const footer = el('div', { class: 'plot-footer' });
   const navbar = createNavbar(surface, {
-    onClearSelection: () => store.set({ selectedFeature: null, selectedSample: null }),
-    isSelectionActive: () => Boolean(store.get('selectedFeature')),
+    onClearSelection: () => store.set({ selectedFeature: null, selectedSample: null,
+                                       selectedSampleGroup: null }),
+    isSelectionActive: () => Boolean(store.get('selectedFeature') || store.get('selectedSample')),
   });
   const canvas = el('div', { class: 'plot-canvas' },
                     [toolbar, surface, navbar.node, footer]);
@@ -81,9 +85,10 @@ function plotPanel(spec) {
       console.error(error);
       message(surface, `Could not draw this plot: ${error.message}`, 'error');
     } finally {
-      // The toolbar reflects whatever is on the surface now: the drag mode,
-      // whether this is a 3D scene, and whether anything is selected.
-      navbar.sync();
+      // Only the enabled/pressed states, which is all a selection can change.
+      // The full sync rebinds Plotly's listeners and re-reads the export
+      // preferences, and belongs with an actual redraw, not with every click.
+      navbar.syncEnabled();
       // The caption is written *after* the plot is drawn (a volcano's counts
       // come out of drawing it), and a two-line caption is 50px the plot no
       // longer has. Plotly only reflows on demand, so without this the axis
@@ -102,6 +107,8 @@ function plotPanel(spec) {
       status.textContent = '';
       buildToolbar();
       redraw();
+      // A new figure: rebind the toolbar to it in full.
+      navbar.sync();
     } catch (error) {
       payload = null;
       status.textContent = '';
@@ -111,6 +118,14 @@ function plotPanel(spec) {
   };
 
   function buildToolbar() {
+    // The controls' options come from the payload, so the bar is rebuilt after
+    // each fetch -- which throws away the control the user just operated. Note
+    // where the focus was and put it back, or changing a dropdown leaves the
+    // keyboard stranded (the same fault the table header had).
+    const focusables = () => [...toolbar.querySelectorAll('select, input, button')];
+    const focusedIndex = toolbar.contains(document.activeElement)
+      ? focusables().indexOf(document.activeElement) : -1;
+
     clear(toolbar);
     const controls = spec.controls ? spec.controls(state, { fetchAndDraw, redraw }, payload) : [];
     for (const item of controls) toolbar.append(item);
@@ -121,15 +136,27 @@ function plotPanel(spec) {
     const bare = !controls.length;
     toolbar.classList.toggle('hidden', bare);
     canvas.classList.toggle('no-toolbar', bare);
+
+    if (focusedIndex !== -1) {
+      const restored = focusables()[focusedIndex];
+      if (restored) restored.focus({ preventScroll: true });
+    }
   }
 
   buildToolbar();
   message(surface, 'Loading…');
 
   const resize = () => {
-    if (surface._plotly && typeof window.Plotly !== 'undefined') {
-      try { Plotly.Plots.resize(surface); } catch { /* not drawn yet */ }
+    if (!surface._plotly || typeof window.Plotly === 'undefined') return;
+    // `Plotly.Plots.resize` redraws the entire figure, so calling it when
+    // nothing has actually changed size makes every selection flash the plot.
+    // Redraw only when the container and the figure disagree.
+    const layout = surface._fullLayout;
+    if (layout && Math.abs(layout.width - surface.clientWidth) < 1
+        && Math.abs(layout.height - surface.clientHeight) < 1) {
+      return;
     }
+    try { Plotly.Plots.resize(surface); } catch { /* not drawn yet */ }
   };
 
   return { node, load: fetchAndDraw, redraw, resize, surface,
@@ -176,7 +203,7 @@ function tabbedView({ id, label, group, requires, tabs }) {
   // A selection made anywhere updates the highlight here -- the desktop's
   // cross-plot highlight. Only the visible view redraws; the others pick the
   // selection up when they are next shown.
-  store.on('selectedFeature', () => {
+  store.on(['selectedFeature', 'selectedSample'], () => {
     if (!node.classList.contains('active')) return;
     panels.get(activeTab)?.redraw();
   });
@@ -349,7 +376,7 @@ function groupAnalysisView() {
         build: () => plotPanel({
           plot: 'samplecorr', tall: true,
           initial: { method: 'Spearman', view: 'Biological Replicates',
-                     use_sample_names: false, colorscheme: 'rocket' },
+                     use_sample_names: true, colorscheme: 'rocket' },
           options: (state) => state,
           controls: (state, actions, payload) => [
             control('Method', select(payload ? payload.methods : ['Spearman'], state.method,
@@ -379,7 +406,7 @@ function dendrogramView() {
       build: () => plotPanel({
         plot: 'dendrogram', tall: true,
         initial: { view: 'Technical Replicates', color_mode: 'Purity',
-                   bootstrap: false, use_sample_names: false },
+                   bootstrap: false, use_sample_names: true },
         options: (state) => state,
         controls: (state, actions, payload) => [
           control('View', select(payload ? payload.views : [], state.view,
@@ -509,7 +536,7 @@ function heatmapView() {
       id: 'heatmap', label: 'Heatmap',
       build: () => plotPanel({
         plot: 'heatmap', tall: true,
-        initial: { view: 'Technical Replicates', use_sample_names: false, colorscheme: 'rocket' },
+        initial: { view: 'Technical Replicates', use_sample_names: true, colorscheme: 'rocket' },
         options: (state) => state,
         controls: (state, actions, payload) => [
           control('View', select(payload ? payload.views : [], state.view,

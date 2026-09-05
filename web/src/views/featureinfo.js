@@ -58,11 +58,25 @@ export function buildFeatureInfoView() {
 
   // --- table rendering --------------------------------------------------
 
+  // Header controls are built once and then only refreshed in place.
+  // Rebuilding them on every reload destroyed whatever the user was typing
+  // in or clicking on -- which is what made the compound box lose focus after
+  // one character, and the Sets list impossible to tick more than once.
+  const sortMarks = new Map();      // column key -> the arrow span
+  const filterControls = new Map(); // column key -> {refresh?}
+  let headerColumns = null;         // the column list the header was built for
+
   function buildHeader() {
     clear(headRow);
     clear(filterRow);
+    sortMarks.clear();
+    filterControls.clear();
+
     for (const column of table.columns) {
-      const active = query.sort === column.key;
+      // The marker only carries the `sort` class while it is actually
+      // indicating the sort, so "the sorted column" stays a single selector.
+      const mark = el('span');
+      sortMarks.set(column.key, mark);
       headRow.append(el('th', {
         title: 'Click to sort',
         on: {
@@ -70,29 +84,45 @@ export function buildFeatureInfoView() {
             // First click on a numeric column sorts descending: "most hits",
             // "most abundant", "biggest fold change" are what you want from
             // those columns, whereas a name sorts naturally A-Z.
+            const active = query.sort === column.key;
             query.descending = active ? !query.descending : column.type === 'number';
             query.sort = column.key;
             load({ keepScroll: false });
           },
         },
-      }, [
-        el('span', { text: column.label }),
-        active ? el('span', { class: 'sort', text: query.descending ? ' ▼' : ' ▲' }) : null,
-      ]));
-      filterRow.append(el('th', {}, [filterControl(column)]));
+      }, [el('span', { text: column.label }), mark]));
+
+      const control = filterControl(column);
+      filterControls.set(column.key, control);
+      filterRow.append(el('th', {}, [control.node]));
+    }
+    headerColumns = table.columns.map((column) => column.key).join('\u0000');
+    refreshHeader();
+  }
+
+  /** Update what a reload can legitimately change -- the sort arrow and the
+   *  set of category tokens -- without touching the controls themselves. */
+  function refreshHeader() {
+    for (const [key, mark] of sortMarks) {
+      const active = query.sort === key;
+      mark.className = active ? 'sort' : '';
+      mark.textContent = active ? (query.descending ? ' ▼' : ' ▲') : '';
+    }
+    for (const control of filterControls.values()) {
+      if (control.refresh) control.refresh(table.categories || []);
     }
   }
 
   function filterControl(column) {
     if (column.type === 'text') {
-      return el('input', {
+      return { node: el('input', {
         type: 'text', placeholder: 'contains...',
         value: (query.filters[column.key] || {}).text || '',
         on: { input: (event) => {
           query.filters[column.key] = { text: event.target.value };
           reload();
         } },
-      });
+      }) };
     }
     if (column.type === 'number') {
       const current = query.filters[column.key] || {};
@@ -104,23 +134,95 @@ export function buildFeatureInfoView() {
           reload();
         } },
       });
-      return el('div', { class: 'range-filter' }, [box('min'), box('max')]);
+      return { node: el('div', { class: 'range-filter' }, [box('min'), box('max')]) };
     }
-    const options = (table && table.categories) || [];
-    const chosen = new Set(((query.filters[column.key] || {}).allowed) || []);
-    return el('select', {
-      multiple: true, size: 1,
-      on: { change: (event) => {
-        const values = Array.from(event.target.selectedOptions).map((o) => o.value);
-        query.filters[column.key] = values.length ? { allowed: values } : null;
-        reload();
-      } },
-    }, options.map((token) => el('option', { value: token, text: token,
-                                             selected: chosen.has(token) })));
+    return categoryFilter(column);
   }
 
+  /** A checkbox popup, the web form of the desktop's category filter (a
+   *  QToolButton whose menu holds one checkable action per token). Ticking a
+   *  box filters immediately and leaves the popup open, so several sets can
+   *  be picked in a row. */
+  function categoryFilter(column) {
+    const chosen = new Set(((query.filters[column.key] || {}).allowed) || []);
+    const label = el('span', { class: 'cat-label' });
+    const menu = el('div', { class: 'cat-menu hidden' });
+    const button = el('button', {
+      class: 'cat-button', type: 'button',
+      on: { click: (event) => { event.stopPropagation(); toggle(); } },
+    }, [label, el('span', { class: 'cat-caret', text: '▾' })]);
+    const node = el('div', { class: 'cat-filter' }, [button, menu]);
+    let tokens = [];
+
+    function syncLabel() {
+      label.textContent = chosen.size === 0 ? 'All'
+        : chosen.size === 1 ? [...chosen][0]
+        : `${chosen.size} selected`;
+      node.classList.toggle('active', chosen.size > 0);
+    }
+
+    function apply() {
+      query.filters[column.key] = chosen.size ? { allowed: [...chosen] } : null;
+      syncLabel();
+      reload();
+    }
+
+    function toggle(open) {
+      const show = open === undefined ? menu.classList.contains('hidden') : open;
+      // Only one popup at a time.
+      for (const other of document.querySelectorAll('.cat-menu')) {
+        if (other !== menu) other.classList.add('hidden');
+      }
+      menu.classList.toggle('hidden', !show);
+    }
+
+    // A click anywhere else closes it, the way a menu should behave.
+    document.addEventListener('click', (event) => {
+      if (!node.contains(event.target)) toggle(false);
+    });
+
+    function refresh(categories) {
+      const key = categories.join('\u0000');
+      if (key === tokens.join('\u0000')) return;   // same tokens: leave the popup alone
+      tokens = [...categories];
+
+      // Drop a chosen token the run no longer has (a different run, say).
+      let dropped = false;
+      for (const token of [...chosen]) {
+        if (!tokens.includes(token)) { chosen.delete(token); dropped = true; }
+      }
+
+      clear(menu);
+      if (!tokens.length) {
+        menu.append(el('div', { class: 'cat-empty muted', text: 'No sets in this run' }));
+      }
+      for (const token of tokens) {
+        menu.append(el('label', { class: 'cat-option' }, [
+          el('input', {
+            type: 'checkbox', checked: chosen.has(token),
+            on: { change: (event) => {
+              if (event.target.checked) chosen.add(token);
+              else chosen.delete(token);
+              apply();
+            } },
+          }),
+          el('span', { text: token }),
+        ]));
+      }
+      if (dropped) {
+        query.filters[column.key] = chosen.size ? { allowed: [...chosen] } : null;
+      }
+      syncLabel();
+    }
+
+    syncLabel();
+    return { node, refresh };
+  }
+
+  let drawnWindow = null;   // "first:last:selected" currently in the DOM
+
   /** Render only the rows currently in view, padded by two spacer rows. */
-  function renderWindow() {
+  function renderWindow(force = false) {
     if (!table) return;
     const rows = table.rows;
     const viewport = scroller.clientHeight || 400;
@@ -128,6 +230,12 @@ export function buildFeatureInfoView() {
     const visible = Math.ceil(viewport / ROW_HEIGHT) + OVERSCAN * 2;
     const last = Math.min(rows.length, first + visible);
     const selected = store.get('selectedFeature');
+
+    // Scrolling fires far more often than the window moves: without this,
+    // every scroll event rebuilt ~40 rows of ~7 cells each for nothing.
+    const signature = `${first}:${last}:${selected}:${rows.length}`;
+    if (!force && signature === drawnWindow) return;
+    drawnWindow = signature;
 
     clear(body);
     topSpacer.style.height = `${first * ROW_HEIGHT}px`;
@@ -170,11 +278,13 @@ export function buildFeatureInfoView() {
       return;
     }
     rowIndex = new Map(table.rows.map((row, index) => [row[0], index]));
-    buildHeader();
+    const columns = table.columns.map((column) => column.key).join('\u0000');
+    if (columns !== headerColumns) buildHeader();
+    else refreshHeader();
     buildToolbar();
     updateCounts();
     scroller.scrollTop = scrollTop;
-    renderWindow();
+    renderWindow(true);
   }
 
   const reload = debounce(() => load({ keepScroll: false }), 260);
@@ -275,7 +385,7 @@ export function buildFeatureInfoView() {
     renderWindow();
   }
 
-  scroller.addEventListener('scroll', renderWindow, { passive: true });
+  scroller.addEventListener('scroll', () => renderWindow(), { passive: true });
   scroller.addEventListener('keydown', (event) => {
     // The filter inputs live inside this container; leave their keys alone.
     if (event.target !== scroller) return;

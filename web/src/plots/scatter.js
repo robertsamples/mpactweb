@@ -7,7 +7,7 @@
  * feature in both apps. */
 
 import { rgba, num } from '../util.js';
-import { AXIS, axisTitle, baseLayout, draw, gridded, highlightTrace, imageFormat,
+import { AXIS, axisTitle, baseLayout, drawSelectable, gridded, imageFormat,
          message, onSelect, originRange, paddedRange } from './base.js';
 
 function hoverText(series, index, fields) {
@@ -48,32 +48,38 @@ function render2d(surface, payload, context, options) {
     message(surface, 'No features matched the current feature sets.');
     return;
   }
-  const traces = scatterTraces(payload, options.fields);
   const selected = context.selectedFeature;
   const point = selected ? findPoint(payload, selected) : null;
-  traces.push(highlightTrace(point && point.x, point && point.y));
 
-  const allX = payload.series.flatMap((series) => series.x || []);
-  const allY = payload.series.flatMap((series) => series.y || []);
+  const fresh = !drawSelectable(surface, [payload, options.grid], () => {
+    const allX = payload.series.flatMap((series) => series.x || []);
+    const allY = payload.series.flatMap((series) => series.y || []);
 
-  // `grid: true` only for the plots whose desktop counterpart calls
-  // ax.grid() -- m/z vs RT does not, the mass-defect and quality views do.
-  const axis = options.grid ? gridded() : AXIS;
-  // Retention time, m/z and mass defect all start at zero on the desktop
-  // (`set_xlim(0, ...)`/`set_ylim(0, ...)`); only the ceiling is autoscaled
-  // here so a dataset larger than the desktop's fixed window still fits.
-  const range = (explicit, values, fromZero) =>
-    explicit || (fromZero ? originRange(values) : paddedRange(values));
-  draw(surface, traces, baseLayout({
-    xaxis: { ...axis, title: axisTitle(payload.x_label),
-             range: range(options.xRange, allX, options.xFromZero !== false) },
-    yaxis: { ...axis, title: axisTitle(payload.y_label),
-             range: range(options.yRange || payload.y_range, allY,
-                          options.yFromZero !== false) },
-    shapes: options.shapes || [],
-  }), imageFormat(payload.plot));
+    // `grid: true` only for the plots whose desktop counterpart calls
+    // ax.grid() -- m/z vs RT does not, the mass-defect and quality views do.
+    const axis = options.grid ? gridded() : AXIS;
+    // Retention time, m/z and mass defect all start at zero on the desktop
+    // (`set_xlim(0, ...)`/`set_ylim(0, ...)`); only the ceiling is autoscaled
+    // here so a dataset larger than the desktop's fixed window still fits.
+    const range = (explicit, values, fromZero) =>
+      explicit || (fromZero ? originRange(values) : paddedRange(values));
+    return {
+      traces: scatterTraces(payload, options.fields),
+      layout: baseLayout({
+        xaxis: { ...axis, title: axisTitle(payload.x_label),
+                 range: range(options.xRange, allX, options.xFromZero !== false) },
+        yaxis: { ...axis, title: axisTitle(payload.y_label),
+                 range: range(options.yRange || payload.y_range, allY,
+                              options.yFromZero !== false) },
+        shapes: options.shapes || [],
+      }),
+      config: imageFormat(payload.plot),
+    };
+  }, point);
 
-  onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
+  // The click handler closes over the payload, so it only needs rebinding
+  // when the plot itself was rebuilt.
+  if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }
 
 /** Locate a compound's coordinates in a payload, for the highlight marker. */
@@ -122,45 +128,64 @@ export function quality(surface, payload, context) {
   });
 }
 
-export function fc3d(surface, payload, context) {
-  const traces = payload.series
-    .filter((series) => series.count > 0)
-    .map((series) => ({
-      type: 'scatter3d',
-      mode: 'markers',
-      name: `${series.name} (${series.count})`,
-      x: series.x, y: series.y, z: series.z,
-      customdata: series.ids,
-      marker: { size: 3, color: series.colour, opacity: 0.85 },
-      text: series.ids.map((id, i) =>
-        `<b>${id}</b><br>log2 FC: ${num(series.x[i], 3)}`
-        + `<br>RT: ${num(series.y[i], 3)}<br>m/z: ${num(series.z[i], 4)}`),
-      hovertemplate: '%{text}<extra></extra>',
-    }));
+/** The selected feature's coordinates in a 3D payload. */
+function findPoint3d(payload, compound) {
+  for (const series of payload.series) {
+    const index = (series.ids || []).indexOf(compound);
+    if (index !== -1) {
+      return { x: series.x[index], y: series.y[index], z: series.z[index] };
+    }
+  }
+  return null;
+}
 
-  if (!traces.length) {
+export function fc3d(surface, payload, context) {
+  if (!payload.series.some((series) => series.count > 0)) {
     message(surface, 'No features with a fold change to plot.');
     return;
   }
+  const selected = context.selectedFeature;
+  const point = selected ? findPoint3d(payload, selected) : null;
 
-  draw(surface, traces, baseLayout({
-    margin: { l: 0, r: 0, t: 24, b: 0 },
-    scene: {
-      // Scene axis titles have to be objects: Plotly dropped the bare-string
-      // form, and a string is silently ignored, leaving the axes labelled
-      // "x", "y" and "z".
-      // x is log2 fold change, which is signed; retention time and m/z are
-      // not, and the desktop starts both at zero.
-      xaxis: { title: axisTitle(payload.x_label), gridcolor: '#cfcfcf',
-               backgroundcolor: '#ededed', showbackground: true },
-      yaxis: { title: axisTitle(payload.y_label), gridcolor: '#cfcfcf',
-               backgroundcolor: '#ededed', showbackground: true,
-               rangemode: 'tozero' },
-      zaxis: { title: axisTitle(payload.z_label), gridcolor: '#cfcfcf',
-               backgroundcolor: '#ededed', showbackground: true,
-               rangemode: 'tozero' },
-    },
-  }), imageFormat('fc3d'));
+  // Scene axes ignore `rangemode`, unlike their 2D counterparts -- setting it
+  // there left retention time starting at -0.29 and m/z at -56. The limits
+  // have to be given outright, the way the desktop hardcodes `set_ylim`.
+  const plotted = payload.series.filter((series) => series.count > 0);
+  const zeroTo = (pick) => originRange(plotted.flatMap(pick));
 
-  onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
+  const fresh = !drawSelectable(surface, [payload], () => ({
+    traces: plotted
+      .map((series) => ({
+        type: 'scatter3d',
+        mode: 'markers',
+        name: `${series.name} (${series.count})`,
+        x: series.x, y: series.y, z: series.z,
+        customdata: series.ids,
+        marker: { size: 3, color: series.colour, opacity: 0.85 },
+        text: series.ids.map((id, i) =>
+          `<b>${id}</b><br>log2 FC: ${num(series.x[i], 3)}`
+          + `<br>RT: ${num(series.y[i], 3)}<br>m/z: ${num(series.z[i], 4)}`),
+        hovertemplate: '%{text}<extra></extra>',
+      })),
+    config: imageFormat('fc3d'),
+    layout: baseLayout({
+      margin: { l: 0, r: 0, t: 24, b: 0 },
+      scene: {
+        // Scene axis titles have to be objects: Plotly dropped the bare-string
+        // form, and a string is silently ignored, leaving the axes labelled
+        // "x", "y" and "z". x is log2 fold change, which is signed; retention
+        // time and m/z are not, and the desktop starts both at zero.
+        xaxis: { title: axisTitle(payload.x_label), gridcolor: '#cfcfcf',
+                 backgroundcolor: '#ededed', showbackground: true },
+        yaxis: { title: axisTitle(payload.y_label), gridcolor: '#cfcfcf',
+                 backgroundcolor: '#ededed', showbackground: true,
+                 range: zeroTo((series) => series.y || []) },
+        zaxis: { title: axisTitle(payload.z_label), gridcolor: '#cfcfcf',
+                 backgroundcolor: '#ededed', showbackground: true,
+                 range: zeroTo((series) => series.z || []) },
+      },
+    }),
+  }), point, { marker3d: true });
+
+  if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }

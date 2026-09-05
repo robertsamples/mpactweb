@@ -10,10 +10,12 @@ import os
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import config, jobs, storage
-from .routers import files, results, runs
+from . import auth, config, jobs, storage
+from .routers import authroutes, files, results, runs
 
 os.environ.setdefault('MPLBACKEND', 'Agg')
 
@@ -38,6 +40,44 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Plot payloads are JSON arrays of floats, which compress hard: the heatmap
+# for ~1000 features is 2.7 MB raw and 1.1 MB gzipped, and Plotly itself is
+# 4.3 MB raw and 1.2 MB gzipped. Without this every plot pays full freight on
+# the wire, which is most of why a big heatmap felt slow to appear.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# Routes that must answer before anyone is signed in: the health check (used
+# by container orchestrators, which have no cookies) and the login endpoints
+# themselves. Everything else under /api/ needs a valid token whenever
+# authentication is switched on.
+_OPEN_PATHS = ('/api/health', '/api/auth/')
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Identify the caller, and turn away unauthenticated API requests.
+
+    A middleware rather than a per-route dependency on purpose: a route added
+    later is protected because it exists, not because someone remembered to
+    decorate it. The static front end stays open so the login page can load;
+    it holds no data of its own.
+    """
+
+    async def dispatch(self, request, call_next):
+        token = request.cookies.get(auth.AUTH_COOKIE)
+        request.state.user = auth.read_token(token) if token else None
+
+        path = request.url.path
+        if (auth.required() and path.startswith('/api/')
+                and not path.startswith(_OPEN_PATHS)
+                and not request.state.user):
+            return JSONResponse(status_code=401,
+                                content={'detail': 'sign in to use this server'})
+        return await call_next(request)
+
+
+app.add_middleware(AuthMiddleware)
+
+app.include_router(authroutes.router)
 app.include_router(files.router)
 app.include_router(runs.router)
 app.include_router(results.router)

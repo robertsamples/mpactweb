@@ -11,7 +11,7 @@
 
 import { api } from '../api.js';
 import { store } from '../state.js';
-import { collapsible } from '../components.js';
+import { collapsible, makeRowResizer } from '../components.js';
 import { clear, el, num } from '../util.js';
 import { FEATURE_FIELDS } from '../fields.js';
 import { abundance as drawAbundance, spectrum as drawSpectrum } from '../plots/review.js';
@@ -26,10 +26,18 @@ const prefs = loadPrefs();
 function loadPrefs() {
   const fallback = { width: 320, collapsed: false,
                      sections: { identity: true, abundance: true,
-                                 spectrum: false, matches: true } };
+                                 spectrum: false, matches: true },
+                     // Panel heights, dragged by the boundary under each plot.
+                     heights: { abundance: 235, spectrum: 200 } };
   try {
     const raw = localStorage.getItem(PREF_KEY);
-    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+    if (!raw) return fallback;
+    const saved = JSON.parse(raw);
+    // Heights were added after the first release of this key, so merge rather
+    // than trust whatever shape is in storage.
+    return { ...fallback, ...saved,
+             sections: { ...fallback.sections, ...(saved.sections || {}) },
+             heights: { ...fallback.heights, ...(saved.heights || {}) } };
   } catch { return fallback; }
 }
 
@@ -74,10 +82,16 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     }
   }
 
-  const section = (key, title, hint, body) => collapsible({
+  const section = (key, title, hint, body, onOpen) => collapsible({
     title, hint, body,
     open: prefs.sections[key] !== false,
-    onToggle: (open) => { prefs.sections[key] = open; savePrefs(); },
+    onToggle: (open) => {
+      prefs.sections[key] = open;
+      savePrefs();
+      // Expanding a section fills it -- the plot must not wait for the user
+      // to re-select the feature it already knows about.
+      if (open && onOpen) onOpen();
+    },
   });
 
   const showEmpty = () => {
@@ -103,14 +117,89 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     ]);
 
     const identityBody = el('div', { class: 'muted', text: 'Loading...' });
-    const abundanceBody = el('div', { class: 'mini-plot' });
-    const spectrumBody = el('div', { class: 'mini-plot' });
+    const abundance = resizablePlot('abundance');
+    const spectrum = resizablePlot('spectrum');
+    const abundanceBody = abundance.plot;
+    const spectrumBody = spectrum.plot;
     const matchesBody = el('div', { class: 'muted', text: 'Searching...' });
 
-    const identitySection = section('identity', 'Details', null, identityBody);
-    const abundanceSection = section('abundance', 'Abundance', 'by group', abundanceBody);
-    const spectrumSection = section('spectrum', 'MS2 spectrum', null, spectrumBody);
-    const matchesSection = section('matches', 'Database matches', null, matchesBody);
+    // Each section fills itself, once per selected feature: render() calls
+    // the loaders for the sections that start open, and expanding a section
+    // later calls its own, so the content never waits on a re-selection.
+    const loaded = new Set();
+
+    const loadIdentity = async () => {
+      if (loaded.has('identity')) return;
+      loaded.add('identity');
+      try {
+        const detail = await api.feature(id, compound);
+        if (mine !== token) return;
+        const list = el('dl', { class: 'kv' });
+        for (const [key, label, digits] of FEATURE_FIELDS) {
+          if (!RAIL_FIELDS.has(key)) continue;
+          const value = detail.fields[key];
+          if (value === undefined || value === null || value === '') continue;
+          list.append(el('dt', { text: label }),
+                      el('dd', { text: digits === null ? String(value).trim() : num(value, digits) }));
+        }
+        identitySection.setBody(list);
+      } catch (error) {
+        loaded.delete('identity');
+        if (mine !== token) return;
+        identitySection.setBody(el('div', { class: 'notice error', text: error.message }));
+      }
+    };
+
+    const loadAbundance = async () => {
+      if (loaded.has('abundance')) return;
+      loaded.add('abundance');
+      abundanceBody.replaceChildren(el('div', { class: 'placeholder', text: 'Loading...' }));
+      try {
+        const payload = await api.abundance(id, compound);
+        if (mine !== token) return;
+        drawAbundance(abundanceBody, payload, { compact: true });
+      } catch {
+        loaded.delete('abundance');
+        if (mine !== token) return;
+        abundanceBody.replaceChildren(el('div', { class: 'placeholder',
+          text: 'No abundance data: this feature did not pass filtering.' }));
+      }
+    };
+
+    const loadSpectrum = async () => {
+      if (loaded.has('spectrum')) return;
+      loaded.add('spectrum');
+      spectrumBody.replaceChildren(el('div', { class: 'placeholder', text: 'Loading...' }));
+      try {
+        const payload = await api.spectrum(id, compound);
+        if (mine !== token) return;
+        drawSpectrum(spectrumBody, payload, { compact: true });
+      } catch (error) {
+        loaded.delete('spectrum');
+        if (mine !== token) return;
+        spectrumBody.replaceChildren(el('div', { class: 'placeholder', text: error.message }));
+      }
+    };
+
+    const loadMatches = async () => {
+      if (loaded.has('matches')) return;
+      loaded.add('matches');
+      try {
+        const payload = await api.matches(id, compound);
+        if (mine !== token) return;
+        matchesSection.setBody(matchesPanel(payload, id));
+      } catch (error) {
+        loaded.delete('matches');
+        if (mine !== token) return;
+        matchesSection.setBody(el('div', { class: 'notice warn', text: error.message }));
+      }
+    };
+
+    const identitySection = section('identity', 'Details', null, identityBody, loadIdentity);
+    const abundanceSection = section('abundance', 'Abundance', 'by group', abundance.node,
+                                     loadAbundance);
+    const spectrumSection = section('spectrum', 'MS2 spectrum', null, spectrum.node, loadSpectrum);
+    const matchesSection = section('matches', 'Database matches', null, matchesBody, loadMatches);
 
     const children = [heading, identitySection, abundanceSection,
                       spectrumSection, matchesSection];
@@ -124,61 +213,41 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     }
     clear(sections).append(...children);
 
-    // --- identity -------------------------------------------------------
-    try {
-      const detail = await api.feature(id, compound);
-      if (mine !== token) return;
-      const list = el('dl', { class: 'kv' });
-      for (const [key, label, digits] of FEATURE_FIELDS) {
-        if (!RAIL_FIELDS.has(key)) continue;
-        const value = detail.fields[key];
-        if (value === undefined || value === null || value === '') continue;
-        list.append(el('dt', { text: label }),
-                    el('dd', { text: digits === null ? String(value).trim() : num(value, digits) }));
-      }
-      identitySection.setBody(list);
-    } catch (error) {
-      if (mine !== token) return;
-      identitySection.setBody(el('div', { class: 'notice error', text: error.message }));
-    }
-
-    // --- abundance (only fetched when the section is open) --------------
-    if (abundanceSection.isOpen()) {
-      try {
-        const payload = await api.abundance(id, compound);
-        if (mine !== token) return;
-        drawAbundance(abundanceBody, payload, { compact: true });
-      } catch {
-        if (mine !== token) return;
-        abundanceBody.replaceChildren(el('div', { class: 'placeholder',
-          text: 'No abundance data: this feature did not pass filtering.' }));
-      }
-    }
-
-    // --- spectrum -------------------------------------------------------
-    if (spectrumSection.isOpen()) {
-      try {
-        const payload = await api.spectrum(id, compound);
-        if (mine !== token) return;
-        drawSpectrum(spectrumBody, payload, { compact: true });
-      } catch (error) {
-        if (mine !== token) return;
-        spectrumBody.replaceChildren(el('div', { class: 'placeholder', text: error.message }));
-      }
-    }
-
-    // --- database matches ------------------------------------------------
-    if (matchesSection.isOpen()) {
-      try {
-        const payload = await api.matches(id, compound);
-        if (mine !== token) return;
-        matchesSection.setBody(matchesPanel(payload, id));
-      } catch (error) {
-        if (mine !== token) return;
-        matchesSection.setBody(el('div', { class: 'notice warn', text: error.message }));
-      }
+    for (const [open, load] of [[identitySection.isOpen(), loadIdentity],
+                                [abundanceSection.isOpen(), loadAbundance],
+                                [spectrumSection.isOpen(), loadSpectrum],
+                                [matchesSection.isOpen(), loadMatches]]) {
+      if (open) load();
     }
   };
+
+  /** A plot panel whose bottom edge can be dragged, so the space between the
+   *  abundance chart and the spectrum below it is yours to divide. Heights
+   *  persist with the rest of the rail's layout; double-click resets. */
+  function resizablePlot(key) {
+    const plot = el('div', { class: 'mini-plot' });
+    plot.style.height = `${prefs.heights[key]}px`;
+    const handle = el('div', { class: 'section-resizer',
+                               title: 'Drag to resize, double-click to reset' });
+    const node = el('div', { class: 'mini-plot-wrap' }, [plot, handle]);
+
+    const redraw = () => {
+      if (plot._plotly && typeof window.Plotly !== 'undefined') {
+        try { Plotly.Plots.resize(plot); } catch { /* not drawn yet */ }
+      }
+    };
+    makeRowResizer(handle, plot, {
+      min: 110,
+      max: 640,
+      onResize: redraw,
+      onCommit: (height) => {
+        prefs.heights[key] = height || (key === 'abundance' ? 235 : 200);
+        savePrefs();
+        redraw();
+      },
+    });
+    return { node, plot };
+  }
 
   /* Hit list and structure together, with the structure following the
    * highlighted hit. The desktop's compound window shows both at once and

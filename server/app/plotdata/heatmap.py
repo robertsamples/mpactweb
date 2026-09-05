@@ -106,7 +106,10 @@ def heatmap(results, options=None):
         'colorscheme': options.get('colorscheme', 'rocket'),
         # z is row-major: z[i][j] is the (i-th reordered feature, j-th
         # reordered column) cell, matching the ordered label arrays below.
-        'z': [[float(v) for v in row] for row in reordered],
+        # Rounded: these are row-scaled 0..1 values rendered as one of 256
+        # colours, so full float64 precision is ~3x the payload for a
+        # difference no display can show.
+        'z': [[round(float(v), 4) for v in row] for row in reordered],
         'features': [feature_ids[i] for i in row_order],
         'columns': [display[j] for j in col_order],
         'column_ids': [raw_columns[j] for j in col_order],

@@ -2,18 +2,25 @@
 
 from fastapi import Depends, HTTPException, Request, Response
 
-from . import config, storage
+from . import auth, config, storage
 from .results import MissingResults, RunResults
 
 
 def get_session(request: Request, response: Response) -> storage.Session:
     """Resolve (or mint) the caller's session and refresh its cookie.
 
-    A session is just a directory of uploads and runs -- there is no login.
-    The cookie is refreshed on every request so an actively used session
-    doesn't expire mid-analysis.
+    A session is a directory of uploads and runs. Without authentication it
+    belongs to a browser, and the cookie is refreshed on every request so an
+    actively used session doesn't expire mid-analysis. With named accounts it
+    belongs to the *account* instead, so someone's uploads and results are
+    there when they sign in from a different machine -- which is the whole
+    point of having named accounts on a shared instrument-facility server.
     """
-    session = storage.Session.load_or_create(request.cookies.get(config.SESSION_COOKIE))
+    user = getattr(request.state, 'user', None)
+    if user and auth.mode() == 'users':
+        session = storage.Session.at_id(auth.workspace_id(user))
+    else:
+        session = storage.Session.load_or_create(request.cookies.get(config.SESSION_COOKIE))
     response.set_cookie(
         config.SESSION_COOKIE, session.id,
         max_age=config.SESSION_MAX_AGE_SECONDS,

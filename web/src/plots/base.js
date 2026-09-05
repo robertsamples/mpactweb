@@ -147,6 +147,64 @@ export function highlightTrace(x, y) {
   };
 }
 
+/** A 3D selection marker: `highlightTrace`'s scattergl has no meaning inside
+ *  a scene, so the ring is an outlined scatter3d point instead. */
+export function highlightTrace3d(x, y, z) {
+  const empty = x === null || x === undefined;
+  return {
+    type: 'scatter3d',
+    mode: 'markers',
+    x: empty ? [] : [x],
+    y: empty ? [] : [y],
+    z: empty ? [] : [z],
+    marker: { size: 7, color: '#f2d024', opacity: 1,
+              line: { color: '#7a6410', width: 2 } },
+    hoverinfo: 'skip',
+    showlegend: false,
+    name: 'selection',
+  };
+}
+
+/**
+ * Draw a plot whose only per-selection change is where the highlight sits.
+ *
+ * `signature` is the list of things the drawn traces depend on (the payload,
+ * plus any live control that changes classification). While it is unchanged,
+ * moving the selection restyles the single highlight trace in place; building
+ * every point's colour and hover text again, and diffing the result through
+ * `Plotly.react`, is what made a moved marker cost a full replot.
+ *
+ * `build()` returns `{traces, layout, config}` and is called only when a real
+ * redraw is needed. The highlight is appended by this function, so it is
+ * always the trace named 'selection'.
+ */
+export function drawSelectable(surface, signature, build, point, options = {}) {
+  const previous = surface._selectionSignature;
+  const unchanged = surface._plotly && Array.isArray(previous)
+    && previous.length === signature.length
+    && previous.every((value, i) => value === signature[i]);
+
+  const make = options.marker3d ? highlightTrace3d : highlightTrace;
+  const coords = point ? [point.x, point.y, point.z] : [];
+
+  if (unchanged) {
+    const index = (surface.data || []).findIndex((trace) => trace.name === 'selection');
+    if (index !== -1) {
+      const update = { x: [coords.length ? [coords[0]] : []],
+                       y: [coords.length ? [coords[1]] : []] };
+      if (options.marker3d) update.z = [coords.length ? [coords[2]] : []];
+      Plotly.restyle(surface, update, [index]);
+      return true;
+    }
+  }
+
+  const { traces, layout, config } = build();
+  traces.push(make(...(coords.length ? coords : [null, null, null])));
+  draw(surface, traces, layout, config);
+  surface._selectionSignature = signature;
+  return false;
+}
+
 /** Wire click-to-select. `resolve(point)` returns the compound id, or null. */
 export function onSelect(surface, resolve, onPick) {
   if (!surface._plotly || !surface.on) return;
@@ -163,20 +221,38 @@ export function onSelect(surface, resolve, onPick) {
  *  top is padded, which is what the desktop's fixed `set_xlim(0, ...)` /
  *  `set_ylim(0, ...)` calls do, minus their hardcoded ceilings. */
 export function originRange(values, pad = 0.05) {
-  const finite = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
-  if (!finite.length) return undefined;
-  const max = Math.max(...finite, 0);
+  const bounds = extent(values);
+  if (!bounds) return undefined;
+  const max = Math.max(bounds.max, 0);
   return [0, max > 0 ? max * (1 + pad) : 1];
+}
+
+/** Min and max of the finite numbers in `values`, or null if there are none.
+ *
+ *  A loop rather than `Math.min(...values)`: spreading passes every point as
+ *  an argument, and V8 gives up with a stack overflow well inside the 100,000
+ *  features this app is willing to put in a table.
+ */
+export function extent(values) {
+  let min = Infinity;
+  let max = -Infinity;
+  let seen = false;
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    if (value < min) min = value;
+    if (value > max) max = value;
+    seen = true;
+  }
+  return seen ? { min, max } : null;
 }
 
 /** Sensible axis padding when a payload gives no explicit range.
  *  The desktop hardcodes several axis ranges (see plotdata/scatter.py); the
  *  web app autoscales instead so nothing is clipped off-screen. */
 export function paddedRange(values, pad = 0.04) {
-  const finite = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
-  if (!finite.length) return undefined;
-  const min = Math.min(...finite);
-  const max = Math.max(...finite);
+  const bounds = extent(values);
+  if (!bounds) return undefined;
+  const { min, max } = bounds;
   if (min === max) return [min - 1, max + 1];
   const span = (max - min) * pad;
   return [min - span, max + span];

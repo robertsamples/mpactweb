@@ -62,12 +62,47 @@ function dendrogramTrace(icoord, dcoord, colours, orientation, axisIds, hover) {
   return traces;
 }
 
+/** Per-cell hover text, memoised on the payload: rebuilding tens of thousands
+ *  of strings on every redraw is pure waste, and the payload only changes when
+ *  the server sends a new one. */
+function hoverText(payload) {
+  if (!payload._hoverText) {
+    payload._hoverText = payload.z.map((row, i) => row.map((value, j) =>
+      `<b>${payload.features[i]}</b><br>${payload.columns[j]}<br>scaled: ${value.toFixed(3)}`));
+  }
+  return payload._hoverText;
+}
+
 export function heatmap(surface, payload, context) {
   const [rows, cols] = payload.shape;
   if (!rows || !cols) {
     message(surface, 'The filtered peak table is empty -- nothing to cluster.');
     return;
   }
+
+  // The highlight band for the selected row. Rows are one unit tall in
+  // category coordinates, so the band spans idx +/- 0.5. This is the web form
+  // of the desktop's `parent.highlight['heatmap']` line artist.
+  const highlightShapes = (feature) => {
+    const index = payload.features.indexOf(feature);
+    if (index === -1) return [];
+    return [{
+      type: 'rect', xref: 'x', yref: 'y',
+      x0: -0.5, x1: cols - 0.5, y0: index - 0.5, y1: index + 0.5,
+      line: { color: '#f2d024', width: 2 }, fillcolor: 'rgba(0,0,0,0)',
+      layer: 'above',
+    }];
+  };
+
+  // Moving the selection must not redraw the matrix. A `Plotly.react` here
+  // re-diffs ~26,000 cells and their hover strings, which is what made the
+  // arrow keys crawl on a real dataset; the highlight is a layout shape, so
+  // a relayout is all it needs.
+  if (surface._plotly && surface._heatmapPayload === payload) {
+    Plotly.relayout(surface, { shapes: highlightShapes(context.selectedFeature) });
+    return;
+  }
+  surface._heatmapPayload = payload;
 
   // scipy lays leaves out at 5, 15, 25, ... in icoord units; map that onto
   // the heatmap's 0..n-1 category positions so the dendrogram lines up with
@@ -85,8 +120,7 @@ export function heatmap(surface, payload, context) {
     colorbar: { title: 'Scaled\nabundance', titleside: 'right', thickness: 12, len: 0.72,
                 x: 1.01, tickfont: { size: 10 } },
     hovertemplate: '%{customdata}<extra></extra>',
-    customdata: payload.z.map((row, i) => row.map((value, j) =>
-      `<b>${payload.features[i]}</b><br>${payload.columns[j]}<br>scaled: ${value.toFixed(3)}`)),
+    customdata: hoverText(payload),
     xaxis: 'x', yaxis: 'y',
   }];
 
@@ -101,27 +135,17 @@ export function heatmap(surface, payload, context) {
   // hides feature (row) tick labels for the same reason.
   const showColumnLabels = cols <= 60;
 
-  // Yellow outline on the selected feature's row -- the web form of the
-  // desktop's `parent.highlight['heatmap']` line artist. Rows are one unit
-  // tall in category coordinates, so the band spans idx +/- 0.5.
-  const selectedRow = payload.features.indexOf(context.selectedFeature);
-  const shapes = [];
-  if (selectedRow !== -1) {
-    shapes.push({
-      type: 'rect', xref: 'x', yref: 'y',
-      x0: -0.5, x1: cols - 0.5,
-      y0: selectedRow - 0.5, y1: selectedRow + 0.5,
-      line: { color: '#f2d024', width: 2 }, fillcolor: 'rgba(0,0,0,0)',
-      layer: 'above',
-    });
-  }
-
   draw(surface, traces, baseLayout({
     margin: { l: 74, r: 90, t: 12, b: showColumnLabels ? 140 : 40 },
     showlegend: false,
-    shapes,
+    shapes: highlightShapes(context.selectedFeature),
+    // Pinned to the cells' own extent. Left to autorange, the row
+    // dendrogram (a scatter trace on this same y axis) pads the range a few
+    // pixels past the data, and that padding shows as bare axis below the
+    // bottom row of colours.
     xaxis: {
       domain: [0.1, 1], anchor: 'y', showgrid: false, zeroline: false,
+      range: [-0.5, cols - 0.5],
       showline: true, mirror: true, linecolor: '#3c3c3c',
       tickmode: showColumnLabels ? 'array' : 'auto',
       tickvals: showColumnLabels ? payload.columns.map((_, i) => i) : undefined,
@@ -130,6 +154,7 @@ export function heatmap(surface, payload, context) {
     },
     yaxis: {
       domain: [0, 0.88], anchor: 'x', showgrid: false, zeroline: false,
+      range: [-0.5, rows - 0.5],
       showline: true, mirror: true, linecolor: '#3c3c3c',
       showticklabels: false, title: axisTitle('Feature'),
     },
@@ -149,19 +174,33 @@ export function heatmap(surface, payload, context) {
     });
   }
 
+  // Plotly's drag layer calls preventDefault on mousedown, which stops this
+  // div taking focus the way a tabindex'd element normally would when you
+  // click inside it -- so without this, clicking a cell selects the feature
+  // but the arrow keys below still go to the page.
+  if (!surface._heatmapFocus) {
+    surface._heatmapFocus = () => surface.focus({ preventScroll: true });
+    surface.addEventListener('pointerdown', surface._heatmapFocus);
+  }
+
   // Step through features in the clustered row order with the arrow keys or
   // W/S -- the desktop binds W/S to `mv_heatmap`, which walks the same
   // reordered index. The surface has to be focusable to receive them.
   surface.tabIndex = 0;
   if (surface._heatmapKeys) surface.removeEventListener('keydown', surface._heatmapKeys);
   surface._heatmapKeys = (event) => {
-    const step = { ArrowDown: 1, s: 1, S: 1, ArrowUp: -1, w: -1, W: -1 }[event.key];
+    // Feature 0 is drawn at the *bottom*: the y axis is not reversed, so the
+    // row dendrogram beside the matrix lines up with it. A key that moves the
+    // selection down the screen therefore moves it down the index, not up --
+    // getting this backwards is what made the arrows feel inverted.
+    const step = { ArrowDown: -1, s: -1, S: -1, ArrowUp: 1, w: 1, W: 1 }[event.key];
     if (step === undefined) return;
     event.preventDefault();
+    const last = payload.features.length - 1;
     const current = payload.features.indexOf(store.get('selectedFeature'));
     const next = current === -1
-      ? (step > 0 ? 0 : payload.features.length - 1)
-      : Math.max(0, Math.min(payload.features.length - 1, current + step));
+      ? (step < 0 ? last : 0)      // nothing picked yet: enter from that edge
+      : Math.max(0, Math.min(last, current + step));
     context.onSelectFeature(payload.features[next]);
   };
   surface.addEventListener('keydown', surface._heatmapKeys);

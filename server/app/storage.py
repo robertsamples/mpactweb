@@ -99,6 +99,24 @@ class Session:
         return session
 
     @classmethod
+    def at_id(cls, session_id):
+        """The session with exactly this id, created if it does not exist yet.
+
+        ``load_or_create`` mints a *random* id when the directory is missing,
+        which is right for a stale browser cookie and wrong for a named
+        account's workspace: that id is derived from who you are, so the first
+        visit has to land in it rather than somewhere new.
+        """
+        session = cls(session_id)
+        if session.root.is_dir():
+            session.touch()
+            return session
+        session.library_dir.mkdir(parents=True, exist_ok=True)
+        session.runs_dir.mkdir(parents=True, exist_ok=True)
+        session._write_index([])
+        return session
+
+    @classmethod
     def load_or_create(cls, session_id):
         """Resolve a client-supplied session id, or mint a fresh session.
 

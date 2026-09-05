@@ -86,6 +86,21 @@ def _resolve():
         # isolates each request -- see plotdata/dendrogram.py.
         'PVCLUST_NBOOT': _int('MPACT_PVCLUST_NBOOT', 1000),
 
+        # --- authentication (see auth.py) --------------------------------
+        # 'none' is right for localhost and for the tests; anything with a
+        # public address wants 'code' (one shared access code) or 'users'
+        # (named accounts, each with their own workspace).
+        'AUTH_MODE': os.environ.get('MPACT_AUTH', 'none').strip().lower(),
+        'ACCESS_CODE': os.environ.get('MPACT_ACCESS_CODE', ''),
+        'USERS_FILE': _path('MPACT_USERS_FILE', data_root / 'users.txt'),
+        'AUTH_MAX_AGE_SECONDS': _int('MPACT_AUTH_MAX_AGE_SECONDS',
+                                     60 * 60 * 24 * 14),
+        # Set this only when a reverse proxy you control (Caddy, nginx) is the
+        # single way in. It makes the sign-in throttle read X-Forwarded-For,
+        # which is a client-supplied header and a lie whenever the app is
+        # reachable directly.
+        'TRUST_PROXY': _bool('MPACT_TRUST_PROXY', False),
+
         'DEV_MODE': _bool('MPACT_DEV', False),
     }
 

@@ -59,9 +59,10 @@ The workflow is the desktop's, tab for tab:
    re-uploading.
 2. **Filtering Settings** — mispicked peaks, blank filtering, CV
    (reproducibility) filtering, in-source fragment deconvolution.
-3. **Analysis Settings** — fold change / t-test / FDR, which plots to
-   generate, the colour-coded Plot Feature Sets, and the database-search
-   window.
+3. **Analysis Settings** — the two groups the statistics compare, the
+   colour-coded Plot Feature Sets, and the database-search window. Fold
+   change, the t-test and FDR correction have no toggles: they are hidden on
+   the desktop too, and always run.
 4. **Run** — the pipeline runs server-side in its own process, streaming its
    console output to the page so a long run isn't an opaque spinner.
 5. **Results** — Data Review, Group Analysis, Dendrogram, Multivariate, m/z
@@ -176,19 +177,95 @@ All optional; every value has a working default.
 | `MPACT_MAX_UPLOAD_BYTES` | `536870912` | Upload ceiling (512MB) |
 | `MPACT_SESSION_MAX_AGE_SECONDS` | `2592000` | Sessions pruned at startup (30 days) |
 | `MPACT_SESSION_COOKIE_SECURE` | `false` | Turn on behind HTTPS |
+| `MPACT_AUTH` | `none` | `none`, `code` or `users` (see below) |
+| `MPACT_ACCESS_CODE` | | The shared code, when `MPACT_AUTH=code` |
+| `MPACT_USERS_FILE` | `<data root>/users.txt` | Accounts, when `MPACT_AUTH=users` |
+| `MPACT_AUTH_MAX_AGE_SECONDS` | `1209600` | How long a sign-in lasts (14 days) |
+| `MPACT_SECRET_KEY` | generated | HMAC key for login cookies |
+| `MPACT_TRUST_PROXY` | `false` | Read `X-Forwarded-For` (only behind your own proxy) |
 | `MPACT_DEV` | `false` | Put exception detail in API responses |
 
 The demo dataset ships in `server/data/demo/`. Remove that directory to hide
 the **Load demo dataset** button; the server then reports it as unavailable
 and the front end omits it.
 
-### A note on deployment
+## Authentication
 
-Sessions are cookie-scoped directories, with no authentication — the same
-trust model as running the desktop app on a shared workstation. Anyone who
-can reach the server can upload files and start analyses. Put it behind your
-own authentication before exposing it beyond a trusted network, and set
-`MPACT_SESSION_COOKIE_SECURE=true` behind HTTPS.
+Off by default, which is right for `localhost` and wrong for anything with a
+public address: uploading a peak table and starting an analysis both spend
+real CPU and disk. Three modes:
+
+**`none`** (default). No sign-in. Sessions are cookie-scoped directories, the
+same trust model as the desktop app on a shared workstation.
+
+**`code`** One shared access code, everyone gets their own workspace. What a
+teaching lab wants: tell the room one code.
+
+```bash
+export MPACT_AUTH=code
+export MPACT_ACCESS_CODE='pick-something-long'
+```
+
+**`users`** Named accounts. Each account's uploads and runs live in a
+workspace derived from the username, so they follow the person to another
+browser or machine, and one account cannot see another's data.
+
+```bash
+export MPACT_AUTH=users
+python scripts/mpact_users.py add rsamples      # prompts for a password
+python scripts/mpact_users.py list
+```
+
+Passwords are hashed with scrypt; the file holds hashes, never passwords.
+Login cookies are HMAC-signed under `MPACT_SECRET_KEY`, which is generated
+into the data root on first start if you don't set one. Set it explicitly if
+you run more than one instance, or everyone is signed out when they move
+between them.
+
+This is not an identity provider. For institutional single sign-on, put an
+authenticating reverse proxy in front (Caddy `forward_auth`, oauth2-proxy,
+Shibboleth) and run MPACT in `none` mode bound to `127.0.0.1`, so the proxy
+is the only way in.
+
+## Deploying on a VM (Jetstream2, Hetzner, or any Linux box)
+
+The analysis is a spawned subprocess that outlives the request that started
+it, and sessions are directories on local disk — so this wants a plain VM,
+not request-scoped serverless. One small instance is enough: the bundled demo
+(4,959 features × 30 injections) runs in about 25 seconds, and browsing a
+completed analysis transfers under 2 MB.
+
+On **Jetstream2** (NSF ACCESS), science gateways are a supported use case, so
+a persistent VM with a public IP is the intended shape. An `m3.quad` (4 vCPU,
+15 GB) running continuously is roughly 35,000 core-hours a year, well inside
+an entry-level allocation.
+
+```bash
+# 1. the app, as a service
+export MPACT_DATA_ROOT=/data/mpact
+export MPACT_AUTH=users
+export MPACT_SESSION_COOKIE_SECURE=true    # you are behind HTTPS
+export MPACT_TRUST_PROXY=true              # Caddy is the only way in
+export MPACT_SECRET_KEY="$(openssl rand -hex 32)"
+uvicorn app.main:app --host 127.0.0.1 --port 8000    # loopback only
+
+# 2. Caddy in front, which gets you TLS automatically
+#    /etc/caddy/Caddyfile:
+#        mpact.example.edu {
+#            reverse_proxy 127.0.0.1:8000
+#            request_body { max_size 512MB }
+#        }
+```
+
+Bind uvicorn to `127.0.0.1`, not `0.0.0.0`: with the proxy on the public
+interface, the app itself should not be reachable directly, or
+`MPACT_TRUST_PROXY` becomes a way to spoof addresses past the sign-in
+throttle.
+
+Two things to plan for rather than discover: allocations are renewed
+annually, and research infrastructure carries no availability guarantee — if
+a class depends on it at a fixed time, that is a risk a commercial VM does
+not have.
 
 ---
 

@@ -182,14 +182,17 @@ def test_importing_twice_does_not_duplicate_the_library(client, demo_frames):
 # --- the legacy feature-set shape ------------------------------------------
 
 def test_main_query_is_mapped_to_the_local_stand_in():
-    """Old saves pickle feature sets as ``main.query``; ``main`` is the Qt
-    entry point, which the server does not have and cannot import."""
+    """Old saves pickle feature sets as ``main.query`` when the desktop was
+    imported as a module, and as ``__main__.query`` when it was launched as a
+    script -- the normal way to start it. Neither module exists on the
+    server."""
     import io
 
     from app import mpctsession
 
     unpickler = mpctsession._SessionUnpickler(io.BytesIO(b''))
     assert unpickler.find_class('main', 'query') is mpctsession.LegacyQuery
+    assert unpickler.find_class('__main__', 'query') is mpctsession.LegacyQuery
 
 
 def test_legacy_query_objects_become_feature_sets():

@@ -22,7 +22,13 @@
   --plot-bg: #e1e1e1;
   --radius: 3px;
   --sidebar-width: 208px;
-  --font: "Segoe UI", "Bahnschrift", system-ui, -apple-system, sans-serif;
+  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* The desktop sets Bahnschrift SemiBold on its headings, tab buttons and
+     labels (ui_main.py) and Bahnschrift on its plot titles, with Segoe UI for
+     body text. Same split here: this is the chrome face, --font is the
+     reading face. */
+  --font-display: "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold",
+                  "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
 }
 
@@ -83,7 +89,7 @@ input[type="color"] {
 /* The desktop application's icon, so the browser tab and the window header
    carry the same mark as the installed program. */
 .titlebar .app-icon { width: 20px; height: 20px; display: block; }
-.titlebar .brand { font-weight: 700; letter-spacing: 1px; }
+.titlebar .brand { font-family: var(--font-display); font-weight: 700; letter-spacing: 1px; }
 .titlebar .brand span { color: var(--accent); }
 .titlebar .spacer { flex: 1; }
 .titlebar .run-chip {
@@ -107,7 +113,7 @@ input[type="color"] {
   background: #1b1b1b; border-top: 1px solid var(--border);
   font-size: 12px; color: var(--muted); overflow: hidden; white-space: nowrap;
 }
-.statusbar .slot-label { color: #6f6f6f; }
+.statusbar .slot-label { font-family: var(--font-display); color: #6f6f6f; }
 .statusbar .value { color: var(--text); font-variant-numeric: tabular-nums; }
 .statusbar .value.none { color: #6f6f6f; font-style: italic; }
 .statusbar .feature { color: var(--accent); font-weight: 600; }
@@ -126,6 +132,7 @@ input[type="color"] {
   display: flex; flex-direction: column; overflow-y: auto;
 }
 .sidebar .group-label {
+  font-family: var(--font-display);
   padding: 14px 14px 6px; font-size: 11px; letter-spacing: 1.2px;
   text-transform: uppercase; color: var(--muted);
 }
@@ -146,10 +153,13 @@ input[type="color"] {
 /* --- main --------------------------------------------------------------- */
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.view { flex: 1; overflow: auto; padding: 18px 22px 32px; display: none; }
+.view { flex: 1; overflow: auto; padding: 14px 20px 18px; display: none; }
 .view.active { display: block; }
-.view > h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
-.view > .lede { margin: 0 0 18px; color: var(--muted); max-width: 70ch; }
+.view > h2 {
+  font-family: var(--font-display);
+  margin: 0 0 3px; font-size: 17px; font-weight: 600;
+}
+.view > .lede { margin: 0 0 12px; color: var(--muted); max-width: 70ch; }
 
 /* A plot view fills the window. The heading and sub-tabs sit on the dark
    chrome; below them the working surface runs edge to edge in the desktop's
@@ -170,10 +180,11 @@ input[type="color"] {
 
 .panel {
   background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+  border-radius: var(--radius); padding: 11px 13px; margin-bottom: 11px;
 }
 .panel > h3 {
-  margin: 0 0 12px; font-size: 13px; font-weight: 600;
+  font-family: var(--font-display);
+  margin: 0 0 9px; font-size: 13px; font-weight: 600;
   color: var(--text); display: flex; align-items: center; gap: 8px;
 }
 .panel > h3 .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
@@ -238,19 +249,22 @@ button.btn.small { padding: 3px 9px; font-size: 12px; }
 /* --- file slots --------------------------------------------------------- */
 
 .slot {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--panel-2); margin-bottom: 8px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel-2); margin-bottom: 5px;
 }
+.slot:last-of-type { margin-bottom: 0; }
 .slot.dragover { border-color: var(--accent); background: #2b3a38; }
-.slot .slot-name { width: 148px; flex: 0 0 148px; font-weight: 600; }
+.slot .slot-name {
+  width: 148px; flex: 0 0 148px; font-family: var(--font-display); font-weight: 600;
+}
 .slot .slot-name small { display: block; font-weight: 400; color: var(--muted); }
 .slot .slot-value { flex: 1; min-width: 0; }
 .slot .slot-value .filename {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .slot .slot-value .empty { color: var(--muted); }
-.slot .slot-value .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.slot .slot-value .meta { color: var(--muted); font-size: 11px; margin-top: 1px; }
 .slot .slot-value .meta .bad { color: var(--danger); }
 .slot select {
   max-width: 320px;
@@ -372,9 +386,12 @@ select option { background: #1c1c1c; color: var(--text); }
 }
 .plot-surface.tall { min-height: 240px; }
 
-/* The caption sits on the working surface, between the plot and its
-   controls, so it is dark-on-grey rather than light-on-dark. */
-.plot-footer { flex: 0 0 auto; padding: 4px 12px; color: #4a4a4a; font-size: 12px; }
+/* The caption strip continues the navbar's grey, so the two read as one bar
+   under the plot rather than a strip of plot-ground with text on it. */
+.plot-footer {
+  flex: 0 0 auto; padding: 4px 12px; color: #4a4a4a; font-size: 12px;
+  background: #d7d7d7;
+}
 .plot-footer:empty { display: none; }
 .plot-footer p { margin: 0; color: #4a4a4a; }
 .plot-footer .muted { color: #5c5c5c; }
@@ -419,6 +436,21 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
   padding: 10px; max-height: 340px; overflow: auto; white-space: pre-wrap;
   color: #b9b9b9;
 }
+
+/* The Run page fills the window and gives what is left to the log, which
+   scrolls inside itself. The pipeline prints hundreds of lines, and a page
+   that grows a scrollbar per line is a page you cannot read the top of. */
+.view.run-view.active {
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.view.run-view > * { flex: 0 0 auto; }
+.view.run-view > .progress-panel {
+  flex: 1 1 auto; min-height: 140px; display: flex; flex-direction: column;
+  margin-bottom: 0;
+}
+.view.run-view > .progress-panel .log {
+  flex: 1 1 auto; min-height: 90px; max-height: none;
+}
 .notice {
   padding: 9px 12px; border-radius: var(--radius); margin-bottom: 12px;
   border-left: 3px solid var(--muted); background: var(--panel-2);
@@ -455,6 +487,39 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .panel.dragover { border-color: var(--accent); background: #22312f; }
 .session-status:empty { display: none; }
 .session-status { margin-top: 10px; }
+
+/* --- sign-in ------------------------------------------------------------
+   Shown in place of the app, not over it: with no login every API call is
+   refused, so there is nothing behind to see. */
+.login-screen {
+  height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); padding: 20px;
+}
+.login-card {
+  width: 340px; max-width: 100%;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; padding: 22px 24px 24px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .45);
+}
+.login-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 20px; }
+.login-brand .login-icon { width: 30px; height: 30px; }
+.login-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 17px;
+  letter-spacing: 1px;
+}
+.login-subtitle { color: var(--muted); font-size: 11px; }
+.login-form { display: flex; flex-direction: column; gap: 12px; }
+.login-field { display: flex; flex-direction: column; gap: 4px; }
+.login-field span {
+  font-family: var(--font-display); font-size: 11px; color: var(--muted);
+  letter-spacing: .5px;
+}
+.login-field input { padding: 7px 9px; }
+.login-form .notice { margin-bottom: 0; }
+.login-form .btn { margin-top: 2px; padding: 7px; }
+.titlebar .signed-in {
+  font-family: var(--font-display); font-size: 12px; color: var(--muted);
+}
 
 .hidden { display: none !important; }
 .pill {
@@ -506,6 +571,35 @@ table.features .range-filter input { width: 50%; min-width: 0; }
 /* Compound ids are long; the other columns are numbers and stay narrow. */
 table.features th:nth-child(1), table.features td:nth-child(1) { width: 22%; }
 table.features th:nth-child(5), table.features td:nth-child(5) { width: 22%; }
+
+/* Category (Sets) column filter: a button that opens a checkbox popup, the
+   web form of the desktop's checkable-action menu. A multi-select listbox
+   one row tall, which this replaces, is not operable with a mouse. */
+.cat-filter { position: relative; }
+.cat-button {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  background: #1c1c1c; color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 2px 5px; font-size: 11px; cursor: pointer; text-align: left;
+}
+.cat-button:hover { border-color: #565656; }
+.cat-filter.active .cat-button { border-color: var(--accent); color: #fff; }
+.cat-button .cat-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-button .cat-caret { color: var(--muted); font-size: 9px; }
+.cat-menu {
+  position: absolute; z-index: 20; top: 100%; left: 0; min-width: 100%;
+  max-height: 240px; overflow: auto; margin-top: 2px;
+  background: var(--panel-2); border: 1px solid #565656;
+  border-radius: var(--radius); padding: 3px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+.cat-option {
+  display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  padding: 3px 6px; border-radius: var(--radius); cursor: pointer; font-size: 12px;
+}
+.cat-option:hover { background: var(--panel); }
+.cat-option input { accent-color: var(--accent); margin: 0; }
+.cat-empty { padding: 4px 6px; font-size: 12px; }
 
 .kv.wide { grid-template-columns: max-content 1fr; column-gap: 20px; }
 
@@ -617,13 +711,30 @@ table.features th:nth-child(5), table.features td:nth-child(5) { width: 22%; }
 .details-rail .rail-head button { margin-left: auto; flex: 0 0 auto; }
 .details-rail .rail-sections {
   flex: 1; min-height: 0; overflow: auto; padding: 12px 14px;
-  display: flex; flex-direction: column; gap: 12px;
+  display: flex; flex-direction: column; gap: 7px;
 }
-.details-rail .collapsible { border-top: 1px solid var(--border); padding-top: 10px; }
+.details-rail .collapsible { border-top: 1px solid var(--border); padding-top: 6px; }
+.details-rail .collapsible > .collapsible-body { padding-top: 7px; }
 .details-rail .collapsible:first-of-type { border-top: none; padding-top: 0; }
 .details-rail .mini-plot {
-  background: var(--plot-bg); border-radius: var(--radius); height: 185px;
+  /* Two panels now (group means beside the per-injection strip, as the
+     desktop draws them), which needs more than a single bar chart did. The
+     height is set inline from the rail's saved layout and dragged by the
+     handle below. */
+  background: var(--plot-bg); border-radius: var(--radius); height: 235px;
 }
+.details-rail .mini-plot-wrap { display: flex; flex-direction: column; }
+/* The boundary under a plot panel: drag it to divide the rail's height
+   between the abundance chart and the spectrum. */
+.details-rail .section-resizer {
+  flex: 0 0 9px; height: 9px; cursor: row-resize; position: relative;
+}
+.details-rail .section-resizer::before {
+  content: ''; position: absolute; left: 38%; right: 38%; top: 4px; height: 2px;
+  background: #4a4a4a; border-radius: 1px;
+}
+.details-rail .section-resizer:hover::before,
+.details-rail .section-resizer.dragging::before { background: var(--accent); }
 .details-rail .mini-plot .placeholder {
   position: static; display: flex; align-items: center; justify-content: center;
   height: 100%; font-size: 11px; padding: 8px; text-align: center;

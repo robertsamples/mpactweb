@@ -40,6 +40,57 @@ export function collapsible({ title, hint, open = false, body, onToggle, classNa
 }
 
 /**
+ * Make `handle` drag-resize the panel *above* it: dragging down grows the
+ * panel, dragging up shrinks it.
+ *
+ * `makeSplitter` sizes the element after the divider, which is what a
+ * side-by-side split wants. Stacked panels want the opposite -- the boundary
+ * between two of them belongs to the one on top -- so this is its own small
+ * function rather than another flag on that one.
+ */
+export function makeRowResizer(handle, panel, { min = 110, max = 640,
+                                                onResize, onCommit } = {}) {
+  let dragging = false;
+
+  const sizeFor = (event) =>
+    Math.round(Math.min(max, Math.max(min, event.clientY - panel.getBoundingClientRect().top)));
+
+  const move = (event) => {
+    if (!dragging) return;
+    event.preventDefault();
+    const size = sizeFor(event);
+    panel.style.height = `${size}px`;
+    if (onResize) onResize(size);
+  };
+
+  const stop = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', stop);
+    if (onCommit) onCommit(sizeFor(event));
+  };
+
+  handle.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
+    dragging = true;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', stop);
+    event.preventDefault();
+  });
+
+  handle.addEventListener('dblclick', () => {
+    panel.style.height = '';
+    if (onResize) onResize(null);
+    if (onCommit) onCommit(null);
+  });
+}
+
+/**
  * Make `splitter` drag-resize `panel`.
  *
  * `panel` is the element *after* the splitter -- the right-hand one for a

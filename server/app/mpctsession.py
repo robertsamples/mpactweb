@@ -37,11 +37,13 @@ class SessionError(Exception):
 class LegacyQuery:
     """Stand-in for ``main.query``, the pre-``GroupSet`` feature-set shape.
 
-    Save files from older desktop builds pickle that class by the qualified
-    name ``main.query``, and ``main`` is the Qt entry point, which the server
-    neither has nor wants. The attributes are restored onto this object
-    instead and handed to ``GroupSet.from_legacy``, which is the same path the
-    desktop takes for those files.
+    Save files pickle that class as ``main.query`` when the desktop was
+    imported as a module, and as ``__main__.query`` when it was launched as a
+    script -- which is how the desktop is normally run, so script-launched
+    saves are the common case. Neither module exists on the server, nor is
+    wanted there; the attributes are restored onto this object instead and
+    handed to ``GroupSet.from_legacy``, the same path the desktop takes for
+    those files.
     """
 
     def __init__(self):
@@ -98,7 +100,7 @@ class _SessionUnpickler(pickle.Unpickler):
         substitute = _PATH_SUBSTITUTES.get((module, name))
         if substitute is not None:
             return substitute
-        if module == 'main' and name == 'query':
+        if module in ('main', '__main__') and name == 'query':
             return LegacyQuery
         if module == 'builtins' and name in _ALLOWED_BUILTINS:
             return super().find_class(module, name)

@@ -138,6 +138,18 @@ class RunRequest(BaseModel):
     label: Optional[str] = None
 
 
+class LoginRequest(BaseModel):
+    """Credentials from the sign-in form.
+
+    ``username`` is unused in shared-code mode, where there is one secret and
+    no accounts, so it is optional rather than two separate request shapes.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    username: str = ''
+    password: str = ''
+
+
 class FileOut(BaseModel):
     id: str
     kind: str

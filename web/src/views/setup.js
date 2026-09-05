@@ -673,28 +673,29 @@ function analysisView() {
     clear(node);
     node.append(el('h2', { text: 'Analysis Settings' }));
     node.append(el('p', { class: 'lede' },
-      ['Which statistics to calculate, which plots to generate, and the colour-coded '
-       + 'Plot Feature Sets used across every plot.']));
+      ['Which two groups the statistics compare, the colour-coded Plot Feature Sets '
+       + 'used across every plot, and the database search.']));
 
     node.append(el('div', { class: 'grid cols-2' }, [
       el('div', { class: 'panel' }, [
-        el('h3', {}, [el('span', { text: 'Calculations' }),
+        // Fold change, the t test and FDR correction have no toggles: they are
+        // hidden on the desktop too and always run, so the only choice here is
+        // which two groups to compare.
+        el('h3', {}, [el('span', { text: 'Statistics' }),
                       el('span', { class: 'hint',
-                                   text: 'every plot is generated; these control the statistics' })]),
-        checkbox('Fold Change', s.FC, (v) => { updateSetting({ FC: v }); refreshAnalysis(); }),
-        checkbox('T test', s.Ttest, (v) => { updateSetting({ Ttest: v }); refreshAnalysis(); }),
-        checkbox('FDR Correction', s.FDR, (v) => updateSetting({ FDR: v })),
-        field('Experimental Group',
-              select([['', 'Select...'], ...groups], s.expgrp,
-                     (v) => updateSetting({ expgrp: v }),
-                     { disabled: !groups.length })),
-        field('Control Group',
-              select([['', 'Select...'], ...groups], s.ctrgrp,
-                     (v) => updateSetting({ ctrgrp: v }),
-                     { disabled: !groups.length })),
+                                   text: 'fold change, t test and FDR correction always run' })]),
+        el('div', { class: 'grid cols-2' }, [
+          field('Experimental Group',
+                select([['', 'Select...'], ...groups], s.expgrp,
+                       (v) => updateSetting({ expgrp: v }),
+                       { disabled: !groups.length })),
+          field('Control Group',
+                select([['', 'Select...'], ...groups], s.ctrgrp,
+                       (v) => updateSetting({ ctrgrp: v }),
+                       { disabled: !groups.length })),
+        ]),
         el('p', { class: 'muted',
-                  text: 'A volcano plot needs both Fold Change and T test, with an '
-                        + 'experimental and a control group selected.' }),
+                  text: 'The volcano plot compares these two groups.' }),
       ]),
     ]));
 
@@ -818,7 +819,7 @@ function runView() {
     node.append(summaryPanel);
 
     if (run) {
-      const statusPanel = el('div', { class: 'panel' }, [
+      const statusPanel = el('div', { class: 'panel progress-panel' }, [
         el('h3', {}, [el('span', { text: 'Progress' }),
                       el('span', { class: 'hint', text: run.stage || run.state })]),
       ]);
@@ -871,6 +872,9 @@ function runView() {
 
   store.on('run', () => { if (node.classList.contains('active')) refreshRun(); });
   refreshRun();
+  // The log takes whatever height is left and scrolls inside itself, so the
+  // page behind it never grows a scrollbar of its own.
+  node.classList.add('run-view');
   return { id: 'run', label: 'Run', group: 'Setup', node, onShow: refreshRun };
 }
 

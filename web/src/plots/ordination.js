@@ -6,7 +6,7 @@
  * as an SVG path so Plotly can rotate it. */
 
 import { num } from '../util.js';
-import { AXIS, axisTitle, baseLayout, draw, highlightTrace, imageFormat,
+import { AXIS, axisTitle, baseLayout, drawSelectable, imageFormat,
          message, onSelect } from './base.js';
 
 /** Rotated ellipse as an SVG path -- Plotly's shape ellipse has no rotation,
@@ -46,6 +46,17 @@ function scores(surface, payload, context) {
     hovertemplate: '%{text}<extra></extra>',
   }));
 
+  // The same click highlight the feature plots get: selecting a sample rings
+  // its point, not just names it in the status bar.
+  const selected = context.selectedSample;
+  let point = null;
+  if (selected) {
+    for (const series of payload.series) {
+      const index = (series.ids || []).indexOf(selected);
+      if (index !== -1) { point = { x: series.x[index], y: series.y[index] }; break; }
+    }
+  }
+
   const shapes = payload.series
     .filter((series) => series.ellipse)
     .map((series) => ({
@@ -57,17 +68,28 @@ function scores(surface, payload, context) {
       layer: 'below',
     }));
 
-  draw(surface, traces, baseLayout({
-    title: payload.title ? { text: payload.title, font: { size: 13 } } : undefined,
-    xaxis: { ...AXIS, title: axisTitle(payload.x_label) },
-    yaxis: { ...AXIS, title: axisTitle(payload.y_label) },
-    shapes,
-  }), imageFormat('ordination'));
+  const fresh = !drawSelectable(surface, [payload], () => ({
+    traces,
+    layout: baseLayout({
+      title: payload.title ? { text: payload.title, font: { size: 13 } } : undefined,
+      xaxis: { ...AXIS, title: axisTitle(payload.x_label) },
+      yaxis: { ...AXIS, title: axisTitle(payload.y_label) },
+      shapes,
+    }),
+    config: imageFormat('ordination'),
+  }), point);
 
-  // Selecting a point here selects an injection/sample, not a feature -- the
-  // desktop shows it in the "Injection/Sample" label rather than driving the
-  // feature highlight.
-  onSelect(surface, (pt) => pt.customdata, context.onSelectSample || (() => {}));
+  // Selecting a point here selects an injection/sample, not a feature -- it
+  // is named in the status bar rather than driving the feature rail, but it
+  // gets the same ring highlight the feature selection gets elsewhere.
+  if (fresh) {
+    onSelect(surface, (pt) => pt.customdata, (id) => {
+      // The series a point belongs to *is* its biological group, so the status
+      // bar can name the group without another request.
+      const series = payload.series.find((item) => (item.ids || []).includes(id));
+      (context.onSelectSample || (() => {}))(id, series && series.name);
+    });
+  }
 }
 
 function loadings(surface, payload, context) {
@@ -92,26 +114,27 @@ function loadings(surface, payload, context) {
   }];
 
   const hit = payload.loadings.find((item) => item.id === selected);
-  traces.push(highlightTrace(hit && hit.x, hit && hit.y));
 
-  // Origin-anchored arrows, matching the desktop's biplot-style annotate().
-  const annotations = payload.loadings.map((item) => ({
-    x: item.x, y: item.y, ax: 0, ay: 0,
-    xref: 'x', yref: 'y', axref: 'x', ayref: 'y',
-    showarrow: true, arrowhead: 2, arrowsize: 0.8, arrowwidth: 1, arrowcolor: 'steelblue',
-    text: '',
-  }));
+  const fresh = !drawSelectable(surface, [payload], () => ({
+    traces,
+    layout: baseLayout({
+      title: payload.title ? { text: payload.title, font: { size: 13 } } : undefined,
+      // Origin-anchored arrows, matching the desktop's biplot-style annotate().
+      annotations: payload.loadings.map((item) => ({
+        x: item.x, y: item.y, ax: 0, ay: 0,
+        xref: 'x', yref: 'y', axref: 'x', ayref: 'y',
+        showarrow: true, arrowhead: 2, arrowsize: 0.8, arrowwidth: 1,
+        arrowcolor: 'steelblue', text: '',
+      })),
+      xaxis: { ...AXIS, title: axisTitle(payload.x_label), range: payload.range,
+               zeroline: true, zerolinecolor: '#999' },
+      yaxis: { ...AXIS, title: axisTitle(payload.y_label), range: payload.range,
+               zeroline: true, zerolinecolor: '#999' },
+    }),
+    config: imageFormat('ordination-loadings'),
+  }), hit || null);
 
-  draw(surface, traces, baseLayout({
-    title: payload.title ? { text: payload.title, font: { size: 13 } } : undefined,
-    annotations,
-    xaxis: { ...AXIS, title: axisTitle(payload.x_label), range: payload.range,
-             zeroline: true, zerolinecolor: '#999' },
-    yaxis: { ...AXIS, title: axisTitle(payload.y_label), range: payload.range,
-             zeroline: true, zerolinecolor: '#999' },
-  }), imageFormat('ordination-loadings'));
-
-  onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
+  if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }
 
 export function ordination(surface, payload, context) {

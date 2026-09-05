@@ -8,7 +8,7 @@
  * splits enriched (red) from depleted (blue). */
 
 import { num } from '../util.js';
-import { axisTitle, baseLayout, draw, gridded, highlightTrace, imageFormat,
+import { axisTitle, baseLayout, drawSelectable, gridded, imageFormat,
          message, onSelect, originRange, paddedRange } from './base.js';
 
 const CLASS_LABEL = { up: 'Enriched', down: 'Depleted', ns: 'Not significant' };
@@ -36,10 +36,21 @@ function classify(payload, pqthresh, fcthresh) {
   return { buckets, pqCut, fcCut };
 }
 
+/** Classification is per-threshold, not per-selection: cache it on the payload
+ *  so moving the highlight does not re-bucket a thousand points and rebuild
+ *  their hover strings. */
+function classified(payload, pqthresh, fcthresh) {
+  const key = `${pqthresh}|${fcthresh}`;
+  if (!payload._classified || payload._classified.key !== key) {
+    payload._classified = { key, ...classify(payload, pqthresh, fcthresh) };
+  }
+  return payload._classified;
+}
+
 export function volcano(surface, payload, context, options = {}) {
   const pqthresh = options.pqthresh ?? payload.thresholds.pq;
   const fcthresh = options.fcthresh ?? payload.thresholds.fc;
-  const { buckets, pqCut, fcCut } = classify(payload, pqthresh, fcthresh);
+  const { buckets, pqCut, fcCut } = classified(payload, pqthresh, fcthresh);
 
   const total = buckets.up.length + buckets.down.length + buckets.ns.length;
   if (!total) {
@@ -48,23 +59,28 @@ export function volcano(surface, payload, context, options = {}) {
     return { up: 0, down: 0, ns: 0 };
   }
 
-  const traces = ['ns', 'down', 'up'].map((key) => {
-    const points = buckets[key];
-    return {
-      type: 'scattergl',
-      mode: 'markers',
-      name: `${CLASS_LABEL[key]} (${points.length})`,
-      x: points.map((p) => p.x),
-      y: points.map((p) => p.y),
-      customdata: points.map((p) => p.id),
-      marker: { size: 6, color: payload.class_colours[key], opacity: 0.55, line: { width: 0 } },
-      text: points.map((p) =>
-        `<b>${p.id}</b><br>log2 FC: ${num(p.x, 3)}<br>${payload.pq_variable}: ${num(p.y, 3)}`
-        + (p.mz === null ? '' : `<br>m/z: ${num(p.mz, 4)}`)
-        + (p.rt === null ? '' : `<br>RT: ${num(p.rt, 3)}`)),
-      hovertemplate: '%{text}<extra></extra>',
-    };
-  });
+  const cache = payload._classified;
+  if (!cache.traces) {
+    cache.traces = ['ns', 'down', 'up'].map((key) => {
+      const points = buckets[key];
+      return {
+        type: 'scattergl',
+        mode: 'markers',
+        name: `${CLASS_LABEL[key]} (${points.length})`,
+        x: points.map((p) => p.x),
+        y: points.map((p) => p.y),
+        customdata: points.map((p) => p.id),
+        marker: { size: 6, color: payload.class_colours[key], opacity: 0.55,
+                  line: { width: 0 } },
+        text: points.map((p) =>
+          `<b>${p.id}</b><br>log2 FC: ${num(p.x, 3)}<br>${payload.pq_variable}: ${num(p.y, 3)}`
+          + (p.mz === null ? '' : `<br>m/z: ${num(p.mz, 4)}`)
+          + (p.rt === null ? '' : `<br>RT: ${num(p.rt, 3)}`)),
+        hovertemplate: '%{text}<extra></extra>',
+      };
+    });
+  }
+  const traces = cache.traces;
 
   const selected = context.selectedFeature;
   let point = null;
@@ -74,13 +90,15 @@ export function volcano(surface, payload, context, options = {}) {
       if (hit) { point = hit; break; }
     }
   }
-  traces.push(highlightTrace(point && point.x, point && point.y));
 
   const allX = traces.flatMap((trace) => trace.x || []);
   const allY = traces.flatMap((trace) => trace.y || []);
   const xRange = paddedRange(allX) || [-7, 7];
-  // The desktop's `set_ylim(0, maxpval*1.1)`: significance starts at zero and
-  // the headroom above the most significant point keeps it off the frame.
+  // The desktop's `set_ylim(0, maxpval*1.1)` exactly: significance starts at
+  // zero, with headroom above the most significant point. Markers sitting at
+  // y = 0 are half-clipped by the frame, which is also what matplotlib does
+  // with its default clip_on, so this matches the desktop rather than
+  // floating the data above a negative stub of axis.
   const yRange = originRange(allY, 0.1) || [0, 1];
 
   const line = (x0, y0, x1, y1) => ({
@@ -94,12 +112,18 @@ export function volcano(surface, payload, context, options = {}) {
   }
   if (Number.isFinite(pqCut)) shapes.push(line(xRange[0], pqCut, xRange[1], pqCut));
 
-  draw(surface, traces, baseLayout({
-    xaxis: { ...gridded(), title: axisTitle(payload.x_label), range: xRange },
-    yaxis: { ...gridded(), title: axisTitle(payload.y_label), range: yRange },
-    shapes,
-  }), imageFormat('volcano'));
+  // The thresholds are part of the signature: moving one re-classifies every
+  // point, which is a real redraw, while moving the selection is not.
+  const fresh = !drawSelectable(surface, [payload, pqthresh, fcthresh], () => ({
+    traces,
+    layout: baseLayout({
+      xaxis: { ...gridded(), title: axisTitle(payload.x_label), range: xRange },
+      yaxis: { ...gridded(), title: axisTitle(payload.y_label), range: yRange },
+      shapes,
+    }),
+    config: imageFormat('volcano'),
+  }), point);
 
-  onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
+  if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
   return { up: buckets.up.length, down: buckets.down.length, ns: buckets.ns.length };
 }

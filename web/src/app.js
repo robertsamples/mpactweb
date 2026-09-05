@@ -13,6 +13,7 @@ import { buildSetupViews } from './views/setup.js';
 import { buildResultViews } from './views/results.js';
 import { showRunsDialog } from './views/runs.js';
 import { createStatusBar } from './views/statusbar.js';
+import { showLogin } from './views/login.js';
 import { detailsRail } from './views/detailsrail.js';
 
 const POLL_INTERVAL_MS = 1500;
@@ -97,6 +98,23 @@ export function showView(id) {
 }
 
 export const isRunComplete = () => (store.get('run') || {}).state === 'complete';
+
+/** Put the signed-in identity, and a way out, in the title bar. */
+function showSignedIn(auth) {
+  if (!auth.required) return;
+  const host = $('#run-chip').parentElement;
+  const label = auth.user && auth.user !== 'shared' ? auth.user : 'Signed in';
+  host.insertBefore(el('span', { class: 'signed-in', text: label }), $('#run-chip'));
+  host.append(el('button', {
+    class: 'btn small', type: 'button', text: 'Sign out',
+    on: {
+      click: async () => {
+        try { await api.logout(); } catch { /* going anyway */ }
+        window.location.reload();
+      },
+    },
+  }));
+}
 
 function renderNav() {
   const nav = clear($('#sidebar'));
@@ -194,6 +212,27 @@ export async function selectRun(runId) {
 }
 
 async function boot() {
+  // Before anything else: does this server want a login, and do we have one?
+  // Everything below would 401 without it.
+  let auth = { required: false, authenticated: true };
+  try {
+    auth = await api.authStatus();
+  } catch { /* an older server with no auth routes: carry on unauthenticated */ }
+
+  if (auth.required && !auth.authenticated) {
+    await showLogin(document.getElementById('app'), auth);
+    window.location.reload();
+    return;
+  }
+  showSignedIn(auth);
+
+  // A login that lapses mid-session sends you back to the sign-in screen
+  // rather than leaving a shell that fails every request.
+  window.addEventListener('mpact:unauthenticated', () => {
+    if (document.querySelector('.login-screen')) return;
+    window.location.reload();
+  }, { once: true });
+
   try {
     store.set({ health: await api.health() });
   } catch (error) {
