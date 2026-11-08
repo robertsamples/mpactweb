@@ -1,0 +1,52 @@
+# MPACT Web, production.
+#
+# The difference from the compose file at the repo root: the app is no longer
+# published on a port of its own, Caddy is, and Caddy gets a certificate from
+# Let's Encrypt without being asked. The app listens only on the internal
+# network, which is what makes MPACT_TRUST_PROXY safe to turn on -- the
+# X-Forwarded-For header can only have come from Caddy.
+#
+#   cp deploy/mpact.env.example deploy/mpact.env   # then edit it
+#   docker compose -f deploy/docker-compose.prod.yml up -d
+#
+# Populate the NPAtlas table once (33 MB, not in the image):
+#   docker compose -f deploy/docker-compose.prod.yml run --rm \
+#       mpactweb python /app/scripts/fetch_reference_data.py
+
+services:
+  mpactweb:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: mpactweb:latest
+    # No `ports:`. Nothing reaches this container except through Caddy.
+    expose:
+      - "8000"
+    volumes:
+      - mpact-data:/data
+      - mpact-reference:/reference
+    env_file:
+      - mpact.env
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"     # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data       # certificates: losing these means re-issuing
+      - caddy-config:/config
+    env_file:
+      - mpact.env
+    depends_on:
+      - mpactweb
+    restart: unless-stopped
+
+volumes:
+  mpact-data:
+  mpact-reference:
+  caddy-data:
+  caddy-config:

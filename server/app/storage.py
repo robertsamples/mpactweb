@@ -318,12 +318,19 @@ def ensure_dirs():
     config.REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def prune_sessions(max_age_seconds=config.SESSION_MAX_AGE_SECONDS):
+def prune_sessions(max_age_seconds=None):
     """Delete session directories untouched for longer than ``max_age_seconds``.
 
-    Called at startup. Uploaded peak tables are large and a public deployment
-    would otherwise accumulate them indefinitely.
+    Run at startup and then daily: a peak table and its run outputs are tens
+    of megabytes, and a server that stays up for a term would otherwise only
+    ever grow. Sessions are touched on every request, so an account in active
+    use is never a candidate.
+
+    The default is read here rather than bound as an argument default, so
+    ``config.reload()`` is respected.
     """
+    if max_age_seconds is None:
+        max_age_seconds = config.SESSION_MAX_AGE_SECONDS
     cutoff = time.time() - max_age_seconds
     removed = 0
     for session in iter_sessions():

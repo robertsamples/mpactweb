@@ -1,0 +1,42 @@
+# Caddy in front of MPACT.
+#
+# MPACT_SITE_ADDRESS is your hostname, e.g. mpact.example.edu. Caddy obtains
+# and renews a certificate for it automatically; there is nothing else to do
+# for TLS. For a first run without DNS, set it to :80 and Caddy serves plain
+# HTTP (then leave MPACT_SESSION_COOKIE_SECURE=false until you have a name).
+
+{$MPACT_SITE_ADDRESS} {
+	encode zstd gzip
+
+	# Peak tables are large. This has to be at least MPACT_MAX_UPLOAD_BYTES,
+	# or Caddy rejects the upload before the app can explain why.
+	request_body {
+		max_size 512MB
+	}
+
+	# An analysis is started by a request that returns immediately, but the
+	# NPAtlas search and the first heatmap of a big dataset are genuinely
+	# slow. The default 30s would cut them off.
+	reverse_proxy mpactweb:8000 {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	header {
+		# This app is never framed, loads no third-party scripts by default,
+		# and should not leak URLs to other sites.
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20MB
+			roll_keep 5
+		}
+	}
+}

@@ -5,8 +5,10 @@ MPACT desktop pipeline. See ``docs/architecture.md`` for why the analysis
 runs server-side rather than in the browser.
 """
 
+import asyncio
 import contextlib
 import os
+import traceback
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -20,6 +22,26 @@ from .routers import authroutes, files, results, runs
 os.environ.setdefault('MPLBACKEND', 'Agg')
 
 
+PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+async def _prune_periodically():
+    """Reclaim expired sessions once a day.
+
+    Pruning only at startup is fine for a laptop and useless for a server
+    that stays up for a term: uploads and run outputs are tens of megabytes
+    each, and nothing else ever deletes them.
+    """
+    while True:
+        await asyncio.sleep(PRUNE_INTERVAL_SECONDS)
+        try:
+            removed = await asyncio.to_thread(storage.prune_sessions)
+            if removed:
+                print(f'pruned {removed} expired session(s)')
+        except Exception:  # noqa: BLE001 - a sweep failing must not stop the server
+            traceback.print_exc()
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     storage.ensure_dirs()
@@ -27,9 +49,13 @@ async def lifespan(app: FastAPI):
     if removed:
         print(f'pruned {removed} expired session(s)')
     jobs.manager.start()
+    sweeper = asyncio.create_task(_prune_periodically())
     try:
         yield
     finally:
+        sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweeper
         await jobs.manager.shutdown()
 
 
@@ -106,7 +132,6 @@ async def unhandled_error(request: Request, exc: Exception):
     error page that the front end's ``response.json()`` chokes on, hiding the
     actual cause behind a parse error.
     """
-    import traceback
     traceback.print_exc()
     detail = f'{type(exc).__name__}: {exc}' if config.DEV_MODE else 'internal server error'
     return JSONResponse(status_code=500, content={'detail': detail})

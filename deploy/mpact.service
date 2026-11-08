@@ -1,0 +1,57 @@
+# MPACT Web as a systemd service, for a host running the app directly rather
+# than in a container. Put Caddy (or nginx) in front of 127.0.0.1:8000.
+#
+#   sudo cp deploy/mpact.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mpact
+
+[Unit]
+Description=MPACT Web (Metabolomics Peak Analysis Computational Tool)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=mpact
+Group=mpact
+WorkingDirectory=/opt/mpactweb/server
+
+Environment=MPLBACKEND=Agg
+Environment=MPACT_DATA_ROOT=/var/lib/mpact
+Environment=MPACT_NPATLAS_PATH=/var/lib/mpact/npatlas.tsv
+
+# Authentication. 'none' is the default and means no login at all.
+Environment=MPACT_AUTH=code
+Environment=MPACT_ACCESS_CODE=change-this-to-something-long
+# openssl rand -hex 32. Without it the server generates one into the data
+# directory, which is fine for a single instance.
+#Environment=MPACT_SECRET_KEY=
+
+# True because Caddy terminates TLS and is the only way in.
+Environment=MPACT_SESSION_COOKIE_SECURE=true
+Environment=MPACT_TRUST_PROXY=true
+
+Environment=MPACT_MAX_CONCURRENT_JOBS=2
+Environment=MPACT_JOB_TIMEOUT_SECONDS=3600
+
+# Loopback only: the proxy publishes the site. Binding 0.0.0.0 here would let
+# a client reach the app directly and forge X-Forwarded-For past the sign-in
+# throttle.
+ExecStart=/opt/mpactweb/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 --workers 1
+
+Restart=on-failure
+RestartSec=5
+
+# The analysis forks its own worker processes, so KillMode=control-group
+# (the default) is what stops a run cleanly along with the server.
+TimeoutStopSec=30
+
+# Hardening: the app writes only to its data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mpact
+
+[Install]
+WantedBy=multi-user.target

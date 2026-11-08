@@ -35,3 +35,6 @@ package-lock.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Deployment secrets: the access code and cookie key.
+deploy/mpact.env

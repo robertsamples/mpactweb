@@ -51,6 +51,25 @@ def user_client(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _restore_environment():
+    """Put every MPACT_* variable back after each test.
+
+    These tests are the only ones that turn authentication on, and the
+    settings are process-wide: leaving MPACT_AUTH set would make every other
+    test module's requests 401. Relying on the last test in the file happening
+    to clear it is not isolation, it is luck with a running clock.
+    """
+    from app import config
+
+    before = {k: v for k, v in os.environ.items() if k.startswith('MPACT_')}
+    yield
+    for key in [k for k in os.environ if k.startswith('MPACT_')]:
+        del os.environ[key]
+    os.environ.update(before)
+    config.reload()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_throttle():
     """The sign-in throttle is process-wide and keyed by address, and every
     test here knocks from the same one -- so the throttling test would lock
@@ -258,3 +277,55 @@ def test_without_configuration_there_is_no_login(open_client):
         'mode': 'none', 'required': False, 'authenticated': True,
         'user': None, 'needs_username': False}
     assert open_client.get('/api/files').status_code == 200
+
+
+# --- behind a reverse proxy -------------------------------------------------
+
+def _fail_login(client, headers=None):
+    return client.post('/api/auth/login', json={'password': 'wrong'},
+                       headers=headers or {}).status_code
+
+
+def test_forwarded_addresses_are_ignored_unless_the_proxy_is_trusted(tmp_path):
+    """X-Forwarded-For is written by whoever is talking to us.
+
+    Honouring it on a directly reachable server would let one client rotate
+    the header and never be throttled, so it takes an explicit setting.
+    """
+    with make_client(tmp_path, MPACT_AUTH='code',
+                     MPACT_ACCESS_CODE='open-sesame-2026') as client:
+        codes = [_fail_login(client, {'x-forwarded-for': f'10.0.0.{i}'})
+                 for i in range(12)]
+    assert 429 in codes, 'rotating the header evaded the throttle'
+
+
+def test_a_trusted_proxy_throttles_each_caller_separately(tmp_path):
+    """Behind Caddy every request has the same socket address, so throttling
+    on it would let one person's typo lock out the room."""
+    with make_client(tmp_path, MPACT_AUTH='code',
+                     MPACT_ACCESS_CODE='open-sesame-2026',
+                     MPACT_TRUST_PROXY='1') as client:
+        exhausted = [_fail_login(client, {'x-forwarded-for': '203.0.113.7'})
+                     for _ in range(12)]
+        assert 429 in exhausted, 'one caller was never throttled'
+
+        # Someone else, arriving through the same proxy, is unaffected.
+        assert _fail_login(client, {'x-forwarded-for': '203.0.113.8'}) == 401
+
+
+def test_a_trusted_proxy_reads_only_the_first_forwarded_hop(tmp_path):
+    """A client can append to X-Forwarded-For; the leftmost entry is the one
+    the proxy itself wrote."""
+    from app import config
+    from app.routers import authroutes
+
+    class FakeRequest:
+        def __init__(self, header):
+            self.headers = {'x-forwarded-for': header}
+            self.client = type('c', (), {'host': '127.0.0.1'})()
+
+    with make_client(tmp_path, MPACT_AUTH='code', MPACT_ACCESS_CODE='x',
+                     MPACT_TRUST_PROXY='1'):
+        assert config.TRUST_PROXY is True
+        assert authroutes._client_address(
+            FakeRequest('203.0.113.7, 10.0.0.1')) == '203.0.113.7'
