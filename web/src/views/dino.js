@@ -34,10 +34,35 @@ let after = null;            // what follows a one-shot clip
 let timer = null;
 let hiddenSince = 0;
 
-function target() {
+let pressed = false;         // Run clicked, server not answered yet
+let demo = null;             // 'run' then 'fail': a pretend run that crashes
+let demoLeft = 0;            // run frames still to show before it does
+
+/** Start moving on the click itself rather than on the server's reply. */
+export function dinoPressed(on) {
+  pressed = on;
+  if (on) demo = null;
+}
+
+/** One run cycle, then a crash that holds until the next real run. */
+export function dinoCrash() {
   const run = store.get('run');
+  if (!meta || !visible() || pressed
+      || (run && (run.state === 'queued' || run.state === 'running'))) return;
+  demo = 'run';
+  demoLeft = meta.clips.run.frames.length;
+  wake();
+}
+
+function target() {
+  if (pressed) return 'run';
+  const run = store.get('run');
+  if (run && (run.state === 'queued' || run.state === 'running')) {
+    demo = null;
+    return 'run';
+  }
+  if (demo) return demo;
   if (!run) return 'idle';
-  if (run.state === 'queued' || run.state === 'running') return 'run';
   if (run.state === 'failed') return 'fail';
   return 'idle';
 }
@@ -51,7 +76,11 @@ function play(name, list, next = null, start = 0) {
 
 const toIdle = () => play('idle', null, null, 0);
 const toRun = () => play('run', null, null, meta.run_join);
-const toDown = () => { const f = meta.clips.crash.frames; play('down', [f[f.length - 1]]); };
+const toDown = () => {
+  demo = null;   // down is down: from here only a real run gets it up
+  const f = meta.clips.crash.frames;
+  play('down', [f[f.length - 1]]);
+};
 
 /** Jump straight to the resting pose for the current run, no transitions. */
 function settle() {
@@ -86,6 +115,7 @@ function step() {
       break;
     }
     case 'run':
+      if (demo === 'run' && --demoLeft <= 0) demo = 'fail';
       if (want === 'idle' && pos === meta.stop_after) play('stop', null, toIdle);
       else if (want === 'fail' && pos === meta.crash_after) play('crash', null, toDown);
       else pos = (pos + 1) % frames.length;

@@ -15,6 +15,7 @@ import { showRunsDialog } from './views/runs.js';
 import { createStatusBar } from './views/statusbar.js';
 import { showLogin } from './views/login.js';
 import { detailsRail } from './views/detailsrail.js';
+import { dinoCrash } from './views/dino.js';
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -248,6 +249,7 @@ async function boot() {
   store.on('view', renderNav);
 
   $('#btn-runs').addEventListener('click', showRunsDialog);
+  $('.titlebar .app-icon').addEventListener('click', dinoCrash);
 
   // Persistent selection readout along the bottom of the window.
   const statusbar = createStatusBar();

@@ -9,7 +9,7 @@
 
 import { registerView, selectRun, watchRun } from '../app.js';
 import { openMappingEditor } from './mapping.js';
-import { attachDino } from './dino.js';
+import { attachDino, dinoPressed } from './dino.js';
 import { api } from '../api.js';
 import { store } from '../state.js';
 import { collapsible } from '../components.js';
@@ -892,6 +892,7 @@ function runView() {
   async function startRun(event) {
     if (submitting) return;
     submitting = true;
+    dinoPressed(true);
     if (event && event.currentTarget) event.currentTarget.disabled = true;
     const inputs = store.get('inputs');
     const payload = {
@@ -916,6 +917,7 @@ function runView() {
       }
     } finally {
       submitting = false;
+      dinoPressed(false);   // the store's run (or its absence, on an error) takes over
       refreshRun();
     }
   }
