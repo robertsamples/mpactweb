@@ -8,9 +8,12 @@
 FROM python:3.12-slim AS base
 
 # libgomp: scipy/scikit-learn wheels link against OpenMP at runtime.
+# libfreetype6, libfontconfig1: epam.indigo's structure renderer dlopens them.
+# libxrender1, libxext6: rdkit's drawing module links against them.
 # curl: the container healthcheck below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 curl \
+    && apt-get install -y --no-install-recommends libgomp1 libfreetype6 libfontconfig1 \
+       libxrender1 libxext6 curl \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \

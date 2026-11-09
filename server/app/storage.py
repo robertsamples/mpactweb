@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -39,6 +40,9 @@ from . import config
 KINDS = ('peaktable', 'samplelist', 'metadata', 'fragments')
 
 _SAFE_NAME = re.compile(r'[^A-Za-z0-9._-]+')
+
+_INDEX_LOCKS = {}
+_INDEX_LOCKS_GUARD = threading.Lock()
 
 
 def new_id(prefix=''):
@@ -139,19 +143,31 @@ class Session:
 
     # --- library index ----------------------------------------------------
 
+    @property
+    def _lock(self):
+        """Serialises read-modify-write of this session's index. Requests run
+        in a thread pool, so two saves at once (the mapping editor writes a
+        sample list and a metadata file together) would otherwise each write
+        back an index missing the other's change."""
+        with _INDEX_LOCKS_GUARD:
+            return _INDEX_LOCKS.setdefault(self.id, threading.RLock())
+
     def _write_index(self, records):
         payload = [asdict(r) if isinstance(r, FileRecord) else r for r in records]
-        tmp = self.index_path.with_suffix('.json.tmp')
+        tmp = self.index_path.with_suffix(f'.json.{secrets.token_hex(4)}.tmp')
         tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(self.index_path)   # atomic: a crash mid-write can't truncate the index
 
     def files(self):
-        if not self.index_path.exists():
-            return []
-        try:
-            raw = json.loads(self.index_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return []
+        # Under the lock too: on Windows an open reader makes the writer's
+        # atomic rename fail outright.
+        with self._lock:
+            if not self.index_path.exists():
+                return []
+            try:
+                raw = json.loads(self.index_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                return []
         records = []
         for item in raw:
             known = {f: item.get(f) for f in FileRecord.__dataclass_fields__}
@@ -174,27 +190,30 @@ class Session:
                             size=size, uploaded_at=time.time(), fmt=fmt,
                             detail=detail or {})
         (self.library_dir / record.dirname).mkdir(parents=True, exist_ok=True)
-        records = self.files()
-        records.append(record)
-        self._write_index(records)
+        with self._lock:
+            records = self.files()
+            records.append(record)
+            self._write_index(records)
         return record
 
     def update_file(self, file_id, **fields):
-        records = self.files()
-        for record in records:
-            if record.id == file_id:
-                for key, value in fields.items():
-                    setattr(record, key, value)
-                self._write_index(records)
-                return record
+        with self._lock:
+            records = self.files()
+            for record in records:
+                if record.id == file_id:
+                    for key, value in fields.items():
+                        setattr(record, key, value)
+                    self._write_index(records)
+                    return record
         return None
 
     def remove_file(self, file_id):
-        records = self.files()
-        keep = [r for r in records if r.id != file_id]
-        if len(keep) == len(records):
-            return False
-        self._write_index(keep)
+        with self._lock:
+            records = self.files()
+            keep = [r for r in records if r.id != file_id]
+            if len(keep) == len(records):
+                return False
+            self._write_index(keep)
         shutil.rmtree(self.library_dir / file_id, ignore_errors=True)
         return True
 

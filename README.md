@@ -172,13 +172,14 @@ All optional; every value has a working default.
 |---|---|---|
 | `MPACT_DATA_ROOT` | `server/var` | Sessions, uploads and run outputs |
 | `MPACT_NPATLAS_PATH` | `server/data/npatlas.tsv` | NPAtlas table |
+| `MPACT_NPATLAS_SUPPLEMENTAL_PATH` | `server/data/npatlas_supplemental.tsv` | Compounds NPAtlas lacks (SIDERITE, lab compound list), searched together with NPAtlas |
 | `MPACT_MAX_CONCURRENT_JOBS` | `2` | Analyses running at once |
 | `MPACT_JOB_TIMEOUT_SECONDS` | `3600` | Per-run time limit |
 | `MPACT_MAX_UPLOAD_BYTES` | `536870912` | Upload ceiling (512MB) |
 | `MPACT_SESSION_MAX_AGE_SECONDS` | `2592000` | Sessions pruned at startup (30 days) |
 | `MPACT_SESSION_COOKIE_SECURE` | `false` | Turn on behind HTTPS |
 | `MPACT_AUTH` | `none` | `none`, `code` or `users` (see below) |
-| `MPACT_ACCESS_CODE` | | The shared code, when `MPACT_AUTH=code` |
+| `MPACT_ACCESS_CODE` | | The shared code(s), comma-separated, when `MPACT_AUTH=code` (not case-sensitive) |
 | `MPACT_USERS_FILE` | `<data root>/users.txt` | Accounts, when `MPACT_AUTH=users` |
 | `MPACT_AUTH_MAX_AGE_SECONDS` | `1209600` | How long a sign-in lasts (14 days) |
 | `MPACT_SECRET_KEY` | generated | HMAC key for login cookies |

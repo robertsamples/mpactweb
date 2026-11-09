@@ -53,6 +53,11 @@ def _resolve():
         'REFERENCE_DIR': reference_dir,
         'NPATLAS_PATH': Path(os.environ.get('MPACT_NPATLAS_PATH',
                                             reference_dir / 'npatlas.tsv')),
+        # Compounds NPAtlas lacks (SIDERITE siderophores, the lab's own
+        # compound list), in NPAtlas's columns. Ships with the code rather
+        # than the reference volume, and is searched together with NPAtlas.
+        'NPATLAS_SUPPLEMENTAL_PATH': _path('MPACT_NPATLAS_SUPPLEMENTAL_PATH',
+                                           SERVER_ROOT / 'data' / 'npatlas_supplemental.tsv'),
 
         # The demo dataset ships *inside* the deployment, so it is resolved
         # separately from REFERENCE_DIR -- which in Docker is a mounted

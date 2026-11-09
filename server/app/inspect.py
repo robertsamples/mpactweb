@@ -15,6 +15,7 @@ is a preview artifact only: a run still converts its own copy in ``rawdata/``,
 exactly as the desktop converts in place.
 """
 
+import csv
 import shutil
 import traceback
 from pathlib import Path
@@ -37,6 +38,43 @@ class _FormatCheckShim:
 
     def error(self, message):
         self.messages.append(str(message))
+
+
+def _is_msdial_csv(path):
+    """True for an MS-DIAL alignment export saved as comma-separated text."""
+    try:
+        with open(path, newline='', encoding='utf-8-sig', errors='replace') as handle:
+            for index, row in enumerate(csv.reader(handle)):
+                if any(cell.strip() == 'Alignment ID' for cell in row):
+                    return True
+                if index >= 8:
+                    return False
+    except (OSError, csv.Error):
+        return False
+    return False
+
+
+def normalize_peaktable(path):
+    """Rewrite an MS-DIAL ``.csv`` export as the tab-separated ``.txt`` the
+    vendored ``reformat_msdial`` reads.
+
+    MS-DIAL writes the same alignment table as .txt (tab) or .csv (comma); the
+    desktop pipeline only reads the tab form, and the vendored core can't be
+    edited, so the conversion happens here, once, at upload. Returns the new
+    path, or ``None`` if the file needed nothing.
+    """
+    path = Path(path)
+    if path.suffix.lower() != '.csv' or not _is_msdial_csv(path):
+        return None
+    target = path.with_suffix('.txt')
+    with open(path, newline='', encoding='utf-8-sig', errors='replace') as source, \
+            open(target, 'w', newline='', encoding='utf-8') as out:
+        for row in csv.reader(source):
+            out.write('\t'.join(cell.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')
+                                for cell in row))
+            out.write('\n')
+    path.unlink()
+    return target
 
 
 def canonical_peaktable(session, record):
@@ -97,6 +135,76 @@ def peaktable_summary(session, record):
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         return {'format': detected, 'error': f'could not read peak table: {exc}'}
+
+
+def peaktable_injections(session, record):
+    """Every injection (sample column) name in a peak table, in file order."""
+    path, _, _ = canonical_peaktable(session, record)
+    header = pd.read_csv(path, sep=',', header=None, index_col=[0, 1, 2],
+                         nrows=3, low_memory=False)
+    return [str(v) for v in header.iloc[2]]
+
+
+REQUIRED_COLUMNS = {
+    'samplelist': ('Sample_Code', 'Injection'),
+    'metadata': ('Sample_Code', 'Biological_Group'),
+}
+
+
+def read_table(path):
+    """``(columns, rows)`` of a small CSV, every cell as a string."""
+    with open(path, newline='', encoding='utf-8-sig', errors='replace') as handle:
+        rows = [row for row in csv.reader(handle)]
+    while rows and not any(cell.strip() for cell in rows[-1]):
+        rows.pop()
+    if not rows:
+        return [], []
+    columns = rows[0]
+    width = len(columns)
+    body = [(row + [''] * width)[:width] for row in rows[1:] if any(c.strip() for c in row)]
+    return columns, body
+
+
+def write_table(path, kind, columns, rows):
+    """Validate an edited sample list / metadata table and write it as CSV.
+
+    Raises ``ValueError`` with a user-facing message. The checks are the
+    ones whose failure the pipeline would otherwise report as an opaque
+    "Data read failure": a missing key column, or a duplicated key (which the
+    Sample_Code join turns into duplicated injections).
+    """
+    columns = [str(c).strip() for c in columns]
+    if len(set(columns)) != len(columns):
+        raise ValueError('column names must be unique')
+    missing = [c for c in REQUIRED_COLUMNS[kind] if c not in columns]
+    if missing:
+        raise ValueError(f'missing required column(s): {", ".join(missing)}')
+    width = len(columns)
+    cleaned = []
+    for row in rows:
+        row = [str(cell).replace('\r', ' ').replace('\n', ' ').strip()[:1000]
+               for cell in row]
+        row = (row + [''] * width)[:width]
+        if any(row):
+            cleaned.append(row)
+
+    key = 'Injection' if kind == 'samplelist' else 'Sample_Code'
+    required = REQUIRED_COLUMNS[kind]
+    seen = set()
+    for row in cleaned:
+        record = dict(zip(columns, row))
+        for column in required:
+            if not record[column]:
+                raise ValueError(f'every row needs a {column}')
+        if record[key] in seen:
+            raise ValueError(f'{key} "{record[key]}" appears more than once')
+        seen.add(record[key])
+
+    with open(path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.writer(handle, lineterminator='\n')
+        writer.writerow(columns)
+        writer.writerows(cleaned)
+    return len(cleaned)
 
 
 def table_summary(path, required_columns):

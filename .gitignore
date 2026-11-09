@@ -6,6 +6,8 @@ server/var/
 # --- reference data ------------------------------------------------------
 # npatlas.tsv is ~33MB and is fetched, not committed.
 server/data/*.tsv
+# ...except the supplemental table, which is curated here and ships with the code.
+!server/data/npatlas_supplemental.tsv
 server/data/*.db
 
 # --- vendored browser libraries -----------------------------------------
@@ -38,3 +40,6 @@ desktop.ini
 
 # Deployment secrets: the access code and cookie key.
 deploy/mpact.env
+
+# Scratch inputs (example exports, sequence files, source databases).
+temp/

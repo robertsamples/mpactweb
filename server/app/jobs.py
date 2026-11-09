@@ -38,6 +38,14 @@ def _child_entry(session_id, run_id, log_path, env):
     raise SystemExit(child_main(session_id, run_id, log_path))
 
 
+class AlreadyActive(Exception):
+    """The session already has a run queued or running."""
+
+    def __init__(self, run_id):
+        super().__init__(run_id)
+        self.run_id = run_id
+
+
 class JobManager:
     """FIFO queue with a cap on concurrently running analysis processes."""
 
@@ -70,7 +78,35 @@ class JobManager:
 
     # --- submission -------------------------------------------------------
 
+    def active_for(self, session_id):
+        """The run this session has queued or running, if any.
+
+        One at a time per workspace: on a shared server a second Run click
+        would otherwise queue a duplicate behind everyone else's analyses.
+        """
+        for run_id, (_, owner, _) in self._running.items():
+            if owner != session_id:
+                continue
+            # The child writes its final status just before it exits, and the
+            # pump reaps it up to a second later; a finished run must not
+            # block the next one in between.
+            status = storage.Run(storage.Session(owner), run_id).read_status() or {}
+            if status.get('state') in ('complete', 'failed', 'cancelled'):
+                continue
+            return run_id
+        for owner, run_id in self._queue:
+            if owner == session_id:
+                return run_id
+        return None
+
     async def submit(self, session, run):
+        # Checked under the lock as well as by the caller: two clicks can both
+        # pass the caller's check before either reaches the queue.
+        async with self._lock:
+            active = self.active_for(session.id)
+            if active is not None:
+                raise AlreadyActive(active)
+            self._queue.append((session.id, run.id))
         run.write_status({
             'run_id': run.id,
             'state': 'queued',
@@ -80,8 +116,6 @@ class JobManager:
             'error': None,
             'warnings': [],
         })
-        async with self._lock:
-            self._queue.append((session.id, run.id))
         self.start()
         await self._pump()
         return run.id

@@ -114,11 +114,12 @@ def health():
     """Server capability report, used by the front end to hide what is
     unavailable (structure rendering, database search) instead of letting the
     user hit an error."""
-    from .core import indigo_available
+    from .core import structures_available
+    from .plotdata.feature import atlas_available
     return {
         'status': 'ok',
-        'npatlas': config.NPATLAS_PATH.exists(),
-        'structures': indigo_available,
+        'npatlas': atlas_available(),
+        'structures': structures_available,
         'max_upload_mb': config.MAX_UPLOAD_BYTES // (1024 * 1024),
         'max_concurrent_jobs': config.MAX_CONCURRENT_JOBS,
     }

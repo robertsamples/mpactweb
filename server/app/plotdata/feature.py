@@ -264,7 +264,32 @@ ATLAS_FIELDS = (
     ('genus', 'Genus'),
     ('origin_species', 'Species'),
     ('compound_smiles', 'SMILES'),
+    ('source_database', 'Database'),
 )
+
+
+def atlas_available():
+    return config.NPATLAS_PATH.exists() or config.NPATLAS_SUPPLEMENTAL_PATH.exists()
+
+
+def combined_atlas():
+    """NPAtlas plus the supplemental table, as one frame indexed by
+    compound_id. The supplemental table holds only compounds NPAtlas lacks
+    and uses ids from 9,000,001, so the two never collide."""
+    frames = []
+    for path, source in ((config.NPATLAS_PATH, 'NPAtlas'),
+                         (config.NPATLAS_SUPPLEMENTAL_PATH, None)):
+        if not path.exists():
+            continue
+        frame = pd.read_csv(path, sep='\t', header=0, index_col=1)
+        if source:
+            frame['source_database'] = source
+        frames.append(frame)
+    if not frames:
+        raise FileNotFoundError(
+            'npatlas.tsv is not installed on this server; run '
+            'scripts/fetch_reference_data.py to enable database search')
+    return pd.concat(frames) if len(frames) > 1 else frames[0]
 
 
 def load_atlas(kingdom='', genus=''):
@@ -274,11 +299,7 @@ def load_atlas(kingdom='', genus=''):
     The >3-character test is the desktop's own guard: it treats a short value
     as "nothing selected" rather than a real filter.
     """
-    if not config.NPATLAS_PATH.exists():
-        raise FileNotFoundError(
-            'npatlas.tsv is not installed on this server; run '
-            'scripts/fetch_reference_data.py to enable database search')
-    atlas = pd.read_csv(config.NPATLAS_PATH, sep='\t', header=0, index_col=1)
+    atlas = combined_atlas()
     if len(str(kingdom or '')) > 3:
         atlas = atlas[atlas['origin_type'] == kingdom]
     if len(str(genus or '')) > 3:
@@ -308,15 +329,69 @@ def matches_for_mass(atlas, mass, ppm_threshold):
 
 
 def render_structure(smiles):
-    """A 2D structure SVG for a SMILES string, via epam.indigo.
+    """A 2D structure SVG for a SMILES string.
 
+    RDKit with CoordGen coordinates when available, epam.indigo otherwise.
     Optional: the server reports structures as unavailable rather than
-    failing if indigo (a native dependency) isn't installed.
+    failing if neither (both are native dependencies) is installed.
     """
-    from ..core import Indigo, IndigoRenderer, indigo_available
+    from ..core import indigo_available, rdkit_available
+    if rdkit_available:
+        return _render_rdkit(smiles)
     if not indigo_available:
         raise RuntimeError('structure rendering is unavailable on this server '
-                           '(epam.indigo is not installed)')
+                           '(neither rdkit nor epam.indigo is installed)')
+    return _render_indigo(smiles)
+
+
+def _render_rdkit(smiles, size=(420, 320)):
+    """CoordGen layout rather than RDKit's default depictor.
+
+    Natural products are often macrocycles, and the default depiction (like
+    Indigo's) lays a large ring out as a near-circle of almost straight bonds.
+    CoordGen draws the same ring as a polygon at ~120 degree angles, the way a
+    chemist would draw it.
+    """
+    import numpy as np
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdCoordGen
+    from rdkit.Chem.Draw import rdMolDraw2D
+    from rdkit.Geometry import Point3D
+
+    RDLogger.DisableLog('rdApp.*')
+    molecule = Chem.MolFromSmiles(str(smiles))
+    if molecule is None:
+        raise ValueError('unparseable SMILES')
+    rdCoordGen.AddCoords(molecule)
+
+    # Longest axis horizontal, so a structure fills the wide detail panel
+    # instead of standing on end.
+    conformer = molecule.GetConformer()
+    count = molecule.GetNumAtoms()
+    if count > 2:
+        points = np.array([[conformer.GetAtomPosition(i).x, conformer.GetAtomPosition(i).y]
+                           for i in range(count)])
+        points -= points.mean(axis=0)
+        _, _, vt = np.linalg.svd(points, full_matrices=False)
+        angle = np.arctan2(vt[0, 1], vt[0, 0])
+        cos, sin = np.cos(-angle), np.sin(-angle)
+        points = points @ np.array([[cos, sin], [-sin, cos]])
+        for i, (x, y) in enumerate(points):
+            conformer.SetAtomPosition(i, Point3D(float(x), float(y), 0.0))
+
+    drawer = rdMolDraw2D.MolDraw2DSVG(*size)
+    options = drawer.drawOptions()
+    options.setBackgroundColour((1, 1, 1, 1))
+    options.bondLineWidth = 1.5
+    options.padding = 0.06
+    options.additionalAtomLabelPadding = 0.05
+    rdMolDraw2D.PrepareAndDrawMolecule(drawer, molecule)
+    drawer.FinishDrawing()
+    return drawer.GetDrawingText().encode('utf-8')
+
+
+def _render_indigo(smiles):
+    from ..core import Indigo, IndigoRenderer
     indigo = Indigo()
     renderer = IndigoRenderer(indigo)
     indigo.setOption('render-output-format', 'svg')

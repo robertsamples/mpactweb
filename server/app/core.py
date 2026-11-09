@@ -81,6 +81,20 @@ try:  # pragma: no cover - depends on optional dependency
 except Exception:  # noqa: BLE001 - any import/native-load failure is "unavailable"
     Indigo = IndigoRenderer = None
 
+# RDKit is the preferred structure renderer: its CoordGen layout draws
+# macrocycles as polygons at ~120 degree bond angles, where Indigo (and
+# RDKit's own default depictor) inflate a large ring into a near-circle.
+rdkit_available = False
+try:  # pragma: no cover - depends on optional dependency
+    from rdkit import Chem as _Chem  # noqa: F401
+    from rdkit.Chem import rdCoordGen as _rdCoordGen  # noqa: F401
+    from rdkit.Chem.Draw import rdMolDraw2D as _rdMolDraw2D  # noqa: F401
+    rdkit_available = True
+except Exception:  # noqa: BLE001
+    pass
+
+structures_available = rdkit_available or indigo_available
+
 
 __all__ = [
     'MSFaST', 'ionfilter', 'mpact_stats', 'groupsets',
@@ -89,5 +103,6 @@ __all__ = [
     'translators', 'getfragdb', 'mspwriter', 'csvcache', 'mzmineimport',
     'npatlasupdate',
     'Indigo', 'IndigoRenderer', 'indigo_available',
+    'rdkit_available', 'structures_available',
     'VENDOR_DIR',
 ]

@@ -140,7 +140,10 @@ def secret_key() -> bytes:
     if path.is_file():
         return path.read_bytes().strip()
 
-    key = secrets.token_bytes(32)
+    # Hex text, not raw bytes: the read above strips whitespace, and a raw
+    # key that happened to start or end with a whitespace byte (about 1 in 20)
+    # would sign the first login with a different key than every later check.
+    key = secrets.token_hex(32).encode('ascii')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(key)
     try:
@@ -210,11 +213,19 @@ def check_login(username: str, password: str) -> str:
         raise AuthError('this server does not require a login')
 
     if current == 'code':
-        expected = str(config.ACCESS_CODE or '')
-        if not expected:
+        # Comma-separated, so one server can hand different groups (a class,
+        # a lab) their own code. Case-insensitive: these are typed off a slide.
+        codes = [c.strip().lower() for c in str(config.ACCESS_CODE or '').split(',')
+                 if c.strip()]
+        if not codes:
             raise AuthError('this server is set to code login but has no access '
                             'code configured; set MPACT_ACCESS_CODE')
-        if not hmac.compare_digest(password or '', expected):
+        given = (password or '').strip().lower()
+        # Compare against every code, so the answer takes the same time
+        # whichever one (if any) matched.
+        matched = [hmac.compare_digest(given.encode('utf-8'), code.encode('utf-8'))
+                   for code in codes]
+        if not any(matched):
             raise AuthError('that access code is not correct')
         return 'shared'
 

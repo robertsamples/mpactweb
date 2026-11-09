@@ -13,10 +13,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.responses import FileResponse
 
 import shutil
+import time
 
 from .. import config, demo, inspect as inspection, mpctsession, storage
 from ..deps import get_file, get_session
-from ..schemas import AnalysisSettings, FileOut
+from ..schemas import AnalysisSettings, FileOut, TableIn
 
 router = APIRouter(prefix='/api/files', tags=['files'])
 
@@ -76,6 +77,12 @@ async def upload_file(
         session.remove_file(record.id)
         raise
 
+    if kind == 'peaktable':
+        converted = inspection.normalize_peaktable(target)
+        if converted is not None:
+            written = converted.stat().st_size
+            record = session.update_file(record.id, name=converted.name)
+
     detail = inspection.inspect_file(session, record)
     record = session.update_file(record.id, size=written, detail=detail,
                                  fmt=detail.get('format'))
@@ -95,6 +102,76 @@ def download_file(file_id: str, session: storage.Session = Depends(get_session))
     record = get_file(session, file_id)
     return FileResponse(session.path_for(record), filename=record.name,
                         media_type='application/octet-stream')
+
+
+@router.get('/{file_id}/injections')
+def peaktable_injections(file_id: str, session: storage.Session = Depends(get_session)):
+    """Every injection name in a peak table, for building a sample list."""
+    record = get_file(session, file_id, 'peaktable')
+    try:
+        names = inspection.peaktable_injections(session, record)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422,
+                            detail=f'could not read injections: {exc}') from exc
+    return {'names': names}
+
+
+def _table_record(session, file_id):
+    record = get_file(session, file_id)
+    if record.kind not in inspection.REQUIRED_COLUMNS:
+        raise HTTPException(status_code=400,
+                            detail='only sample lists and metadata files are tables')
+    return record
+
+
+@router.get('/{file_id}/table')
+def read_table(file_id: str, session: storage.Session = Depends(get_session)):
+    """A sample list or metadata file as columns + rows of strings."""
+    record = _table_record(session, file_id)
+    try:
+        columns, rows = inspection.read_table(session.path_for(record))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f'could not read CSV: {exc}') from exc
+    return {'id': record.id, 'kind': record.kind, 'name': record.name,
+            'columns': columns, 'rows': rows}
+
+
+def _save_table(session, record, payload):
+    try:
+        inspection.write_table(session.path_for(record), record.kind,
+                               payload.columns, payload.rows)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    path = session.path_for(record)
+    detail = inspection.inspect_file(session, record)
+    return session.update_file(record.id, size=path.stat().st_size, detail=detail,
+                               uploaded_at=time.time())
+
+
+@router.put('/{file_id}/table', response_model=FileOut)
+def replace_table(file_id: str, payload: TableIn,
+                  session: storage.Session = Depends(get_session)):
+    """Overwrite a sample list or metadata file with an edited table. Runs
+    already started keep their own copies, so this never changes a result."""
+    record = _table_record(session, file_id)
+    if record.kind != payload.kind:
+        raise HTTPException(status_code=400, detail=f'file {file_id} is a {record.kind}')
+    return _as_out(_save_table(session, record, payload))
+
+
+@router.post('/table', response_model=FileOut)
+def create_table(payload: TableIn, session: storage.Session = Depends(get_session)):
+    """Save a table built in the browser as a new library file."""
+    name = storage.safe_filename(payload.name or f'{payload.kind}.csv')
+    if not name.lower().endswith('.csv'):
+        name = name.rsplit('.', 1)[0] + '.csv' if '.' in name else name + '.csv'
+    record = session.add_file(kind=payload.kind, name=name, size=0)
+    try:
+        record = _save_table(session, record, payload)
+    except Exception:
+        session.remove_file(record.id)
+        raise
+    return _as_out(record)
 
 
 @router.get('/demo')
@@ -199,6 +276,11 @@ async def import_session(
         if already is None:
             record = session.add_file(kind=kind, name=safe, size=len(content))
             session.path_for(record).write_bytes(content)
+            if kind == 'peaktable':
+                converted = inspection.normalize_peaktable(session.path_for(record))
+                if converted is not None:
+                    record = session.update_file(record.id, name=converted.name,
+                                                 size=converted.stat().st_size)
             detail = inspection.inspect_file(session, record)
             record = session.update_file(record.id, detail=detail,
                                          fmt=detail.get('format'))

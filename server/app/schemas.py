@@ -160,6 +160,16 @@ class FileOut(BaseModel):
     detail: dict = Field(default_factory=dict)
 
 
+class TableIn(BaseModel):
+    """A sample list or metadata table edited in the browser."""
+    model_config = ConfigDict(extra='forbid')
+
+    kind: Literal['samplelist', 'metadata']
+    name: str = ''
+    columns: list[str] = Field(min_length=1, max_length=200)
+    rows: list[list[str]] = Field(max_length=50_000)
+
+
 class JobStatus(BaseModel):
     run_id: str
     state: Literal['queued', 'running', 'complete', 'failed', 'cancelled']

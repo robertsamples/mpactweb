@@ -295,8 +295,10 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
           `${num(match.compound_accurate_mass, 4)} Da`,
           `${num(match.ppm, 2)} ppm`,
         ].filter(Boolean).join('  ·  ') }),
-        el('div', { class: 'muted',
-                    text: `${match.genus || ''} ${match.origin_species || ''}`.trim() }));
+        el('div', { class: 'muted', text: [
+          `${match.genus || ''} ${match.origin_species || ''}`.trim(),
+          match.source_database && match.source_database !== 'NPAtlas' ? match.source_database : '',
+        ].filter(Boolean).join('  ·  ') }));
 
       clear(structure);
       if (!match.compound_smiles) {

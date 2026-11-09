@@ -7,7 +7,9 @@
  * re-uploads, and the pipeline's console output streams into the Run view
  * instead of a terminal the user may not have. */
 
-import { registerView, watchRun } from '../app.js';
+import { registerView, selectRun, watchRun } from '../app.js';
+import { openMappingEditor } from './mapping.js';
+import { attachDino } from './dino.js';
 import { api } from '../api.js';
 import { store } from '../state.js';
 import { collapsible } from '../components.js';
@@ -101,6 +103,9 @@ function buildSlot(slot) {
     value.append(el('div', { class: 'filename empty', text: 'Nothing uploaded yet' }));
   }
 
+  const isTable = slot.kind === 'samplelist' || slot.kind === 'metadata';
+  const bothTables = inputs.samplelist && inputs.metadata;
+
   const node = el('div', { class: 'slot' }, [
     el('div', { class: 'slot-name' }, [
       el('span', { text: slot.label }),
@@ -110,6 +115,22 @@ function buildSlot(slot) {
     el('div', { class: 'btn-row' }, [
       el('button', { class: 'btn small', text: 'Upload…',
                      on: { click: () => fileInput.click() } }),
+      isTable ? el('button', {
+        class: 'btn small', text: 'Create…',
+        title: 'Build a sample list and metadata from injection names',
+        on: { click: () => openMappingEditor({ mode: 'new', onSaved: tablesSaved }) },
+      }) : null,
+      isTable && record ? el('button', {
+        class: 'btn small', text: 'Edit',
+        disabled: !bothTables,
+        title: bothTables ? 'Edit the replicate mapping'
+                          : 'Select a sample list and a metadata file to edit them',
+        on: { click: () => openMappingEditor({ mode: 'edit', onSaved: tablesSaved }) },
+      }) : null,
+      isTable && record ? el('a', {
+        class: 'btn small', text: 'Download', href: api.fileDownloadUrl(record.id),
+        download: record.name,
+      }) : null,
       record ? el('button', {
         class: 'btn small danger', text: 'Remove', title: 'Delete from the library',
         on: { click: () => removeFile(record.id) },
@@ -132,6 +153,21 @@ function buildSlot(slot) {
     if (file) upload(slot.kind, file);
   });
   return node;
+}
+
+/** The mapping editor saved a sample list and/or metadata file: put them in
+ *  the library, select them, and re-derive the groups. */
+function tablesSaved(records) {
+  let files = store.get('files');
+  const inputs = { ...store.get('inputs') };
+  for (const record of records) {
+    files = [record, ...files.filter((f) => f.id !== record.id)];
+    inputs[record.kind] = record.id;
+  }
+  store.set({ files, inputs });
+  store.persistSetup();
+  refreshFiles();
+  deriveGroups();
 }
 
 async function upload(kind, file) {
@@ -758,6 +794,7 @@ function validate() {
 function runView() {
   const node = el('div');
   let logTimer = null;
+  let submitting = false;
 
   const stopLogPolling = () => { clearInterval(logTimer); logTimer = null; };
 
@@ -795,8 +832,9 @@ function runView() {
     const running = run && (run.state === 'running' || run.state === 'queued');
     summaryPanel.append(el('div', { class: 'btn-row' }, [
       el('button', {
-        class: 'btn primary', text: running ? 'Running…' : 'Run',
-        disabled: Boolean(problems.length) || running,
+        class: 'btn primary',
+        text: run && run.state === 'queued' ? 'Queued…' : running ? 'Running…' : 'Run',
+        disabled: Boolean(problems.length) || running || submitting,
         on: { click: startRun },
       }),
       running ? el('button', {
@@ -818,20 +856,23 @@ function runView() {
     ]));
     node.append(summaryPanel);
 
-    if (run) {
-      const statusPanel = el('div', { class: 'panel progress-panel' }, [
-        el('h3', {}, [el('span', { text: 'Progress' }),
-                      el('span', { class: 'hint', text: run.stage || run.state })]),
-      ]);
-      if (running) statusPanel.append(el('div', { class: 'progress' }, [el('div')]));
-      if (run.error) statusPanel.append(el('div', { class: 'notice error', text: run.error }));
-      for (const warning of run.warnings || []) {
-        statusPanel.append(el('div', { class: 'notice warn', text: warning }));
-      }
-      const log = el('pre', { class: 'log', text: 'Waiting for output…' });
-      statusPanel.append(log);
-      node.append(statusPanel);
+    // The terminal stays up with no run too: the dinosaur idles in it.
+    const statusPanel = el('div', { class: 'panel progress-panel' }, [
+      el('h3', {}, [el('span', { text: 'Progress' }),
+                    el('span', { class: 'hint', text: run ? run.stage || run.state : 'idle' })]),
+    ]);
+    if (running) statusPanel.append(el('div', { class: 'progress' }, [el('div')]));
+    if (run && run.error) statusPanel.append(el('div', { class: 'notice error', text: run.error }));
+    for (const warning of (run && run.warnings) || []) {
+      statusPanel.append(el('div', { class: 'notice warn', text: warning }));
+    }
+    const log = el('pre', { class: 'log', text: run ? 'Waiting for output…' : '' });
+    const terminal = el('div', { class: 'terminal' }, [log]);
+    statusPanel.append(terminal);
+    node.append(statusPanel);
+    attachDino(terminal);
 
+    if (run) {
       const pull = async () => {
         try {
           const body = await api.runLog(run.run_id);
@@ -848,7 +889,10 @@ function runView() {
     }
   };
 
-  async function startRun() {
+  async function startRun(event) {
+    if (submitting) return;
+    submitting = true;
+    if (event && event.currentTarget) event.currentTarget.disabled = true;
     const inputs = store.get('inputs');
     const payload = {
       inputs: {
@@ -864,9 +908,15 @@ function runView() {
       store.set({ run: { run_id: body.run_id, state: 'queued', stage: 'queued' },
                   catalogue: null, selectedFeature: null });
       watchRun(body.run_id);
-      refreshRun();
     } catch (error) {
       toast(error.message, 'error');
+      // Already queued or running: show that run rather than a dead button.
+      if (error.status === 409 && error.body && error.body.run_id) {
+        try { await selectRun(error.body.run_id); } catch { /* deleted meanwhile */ }
+      }
+    } finally {
+      submitting = false;
+      refreshRun();
     }
   }
 

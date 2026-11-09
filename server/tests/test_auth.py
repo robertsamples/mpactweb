@@ -197,6 +197,16 @@ def test_the_shared_code_signs_in_and_opens_the_api(code_client):
     assert code_client.get('/api/auth/status').json()['authenticated'] is True
 
 
+def test_several_codes_each_sign_in_regardless_of_case(tmp_path):
+    with make_client(tmp_path, MPACT_AUTH='code',
+                     MPACT_ACCESS_CODE='CHM350, CMSFord222') as client:
+        for code in ('CHM350', 'chm350', ' cmsford222 '):
+            assert client.post('/api/auth/login', json={'password': code}).status_code == 200
+            client.post('/api/auth/logout', json={})
+        for code in ('CHM35', 'CHM350,CMSFord222', ''):
+            assert client.post('/api/auth/login', json={'password': code}).status_code == 401
+
+
 def test_a_named_account_signs_in(user_client):
     assert user_client.post('/api/auth/login',
                             json={'username': 'rsamples',

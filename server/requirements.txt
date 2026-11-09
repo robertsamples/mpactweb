@@ -22,6 +22,9 @@ pydantic==2.9.2
 # structures as unavailable rather than failing if this is absent, so it can
 # be dropped on platforms where the native library is a problem.
 epam.indigo==1.23.0
+# Preferred renderer when present: CoordGen draws macrocycles as polygons
+# instead of the near-circles Indigo produces.
+rdkit==2024.3.5
 
 # Test-only (installed by requirements-dev.txt in CI):
 # pytest, httpx

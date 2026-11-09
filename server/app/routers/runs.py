@@ -4,6 +4,7 @@ import shutil
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from .. import config, jobs, storage
 from ..deps import get_file, get_run, get_session
@@ -53,6 +54,10 @@ async def create_run(payload: RunRequest, session: storage.Session = Depends(get
     fragments = (get_file(session, payload.inputs.fragments, 'fragments')
                  if payload.inputs.fragments else None)
 
+    active = jobs.manager.active_for(session.id)
+    if active is not None:
+        return _already_active(active)
+
     settings = payload.settings
     if settings.blnkfltr and not settings.blnkgrp:
         raise HTTPException(status_code=422,
@@ -80,8 +85,20 @@ async def create_run(payload: RunRequest, session: storage.Session = Depends(get
     request['created_at'] = time.time()
     run.write_request(request)
 
-    await jobs.manager.submit(session, run)
+    try:
+        await jobs.manager.submit(session, run)
+    except jobs.AlreadyActive as exc:
+        shutil.rmtree(run.root, ignore_errors=True)
+        return _already_active(exc.run_id)
     return {'run_id': run.id, 'state': 'queued'}
+
+
+def _already_active(run_id):
+    return JSONResponse(status_code=409, content={
+        'detail': 'You already have an analysis queued or running. '
+                  'Wait for it to finish, or cancel it.',
+        'run_id': run_id,
+    })
 
 
 @router.get('/{run_id}/status', response_model=JobStatus)

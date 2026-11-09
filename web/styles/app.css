@@ -448,8 +448,23 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
   flex: 1 1 auto; min-height: 140px; display: flex; flex-direction: column;
   margin-bottom: 0;
 }
-.view.run-view > .progress-panel .log {
-  flex: 1 1 auto; min-height: 90px; max-height: none;
+.view.run-view > .progress-panel .terminal {
+  flex: 1 1 auto; min-height: 90px;
+}
+
+/* The log over the dinosaur: the terminal box carries the background, the
+   canvas sits in its bottom-right corner, and the text scrolls on top. */
+.terminal {
+  position: relative; display: flex; flex-direction: column; overflow: hidden;
+  background: #141414; border: 1px solid var(--border); border-radius: var(--radius);
+}
+.terminal > .log {
+  position: relative; z-index: 1; flex: 1 1 auto; min-height: 0; max-height: none;
+  background: transparent; border: 0; border-radius: 0;
+}
+.terminal > canvas.dino {
+  position: absolute; right: 16px; bottom: 8px; z-index: 0;
+  image-rendering: crisp-edges; image-rendering: pixelated; pointer-events: none;
 }
 .notice {
   padding: 9px 12px; border-radius: var(--radius); margin-bottom: 12px;
@@ -744,3 +759,93 @@ table.features th:nth-child(5), table.features td:nth-child(5) { width: 22%; }
 
 .structure { background: #fff; border-radius: var(--radius); padding: 6px; text-align: center; }
 .structure svg, .structure img { max-width: 100%; height: auto; }
+
+/* --- links styled as buttons (downloads) ------------------------------- */
+
+a.btn {
+  display: inline-block; text-decoration: none; line-height: normal;
+  background: var(--control); border: 1px solid #565656; color: var(--text);
+  border-radius: var(--radius); padding: 6px 14px; cursor: pointer;
+}
+a.btn:hover { background: var(--control-hover); }
+a.btn.small { padding: 3px 9px; font-size: 12px; }
+
+/* --- sample list / metadata editor ------------------------------------- */
+
+dialog.mapping {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 0;
+  width: min(1180px, 96vw); height: min(880px, 92vh);
+}
+dialog.mapping[open] { display: flex; flex-direction: column; }
+dialog.mapping::backdrop { background: rgba(0, 0, 0, .55); }
+.mapping .spacer { flex: 1; }
+.mapping .m-head, .mapping .m-rules, .mapping .m-example, .mapping .m-status, .mapping .m-foot {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 16px;
+}
+.mapping .m-head { border-bottom: 1px solid var(--border); padding-top: 12px; }
+.mapping .m-head h3 { margin: 0 8px 0 0; font-family: var(--font-display); font-size: 15px; }
+.mapping .m-rules { gap: 14px; padding-top: 10px; }
+.mapping .m-rules .rule { display: inline-flex; align-items: center; gap: 4px; }
+.mapping .m-rules .check { padding: 0; gap: 5px; }
+.mapping input.short { width: 52px; font-family: var(--mono); }
+dialog.mapping:focus, dialog.mapping:focus-visible { outline: none; }
+.mapping input.mid { width: 110px; }
+.mapping .m-example { padding-top: 2px; font-size: 12px; }
+.mapping .m-example .mono { font-size: 12px; }
+.mapping .tokens { display: inline-flex; align-items: center; gap: 1px; font-family: var(--mono); }
+.mapping .tok {
+  padding: 1px 6px; border-radius: 3px; background: #1c1c1c; border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 12px;
+}
+.mapping .tok.click { cursor: pointer; }
+.mapping .tok.click:hover { border-color: var(--muted); }
+.mapping .tok.tech { border-color: var(--warn); color: #e8cf9c; }
+.mapping .tok.bio { border-color: var(--accent); color: #9fe0d8; }
+.mapping .tok.drop { opacity: .45; text-decoration: line-through; }
+.mapping .sep { color: var(--muted); }
+.mapping .legend { margin-left: auto; display: inline-flex; gap: 6px; }
+.mapping .legend .tok { font-family: var(--font); font-size: 11px; }
+.mapping .m-status { border-top: 1px solid var(--border); font-size: 12px; }
+.mapping .m-status input[type="search"] { width: 180px; }
+.mapping .m-status .stats { color: var(--muted); }
+.mapping .m-status .warn { color: var(--warn); }
+.mapping .m-status .bad { color: var(--danger); }
+.mapping .m-status .okay { color: var(--ok); }
+.mapping .pill.click { cursor: pointer; color: var(--text); border-color: var(--accent); }
+.mapping .m-body { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 0 16px 8px; }
+.mapping .m-table, .mapping .m-groups {
+  min-height: 0; overflow: auto; border: 1px solid var(--border); background: var(--panel-2);
+}
+.mapping .m-table { flex: 1; min-width: 0; }
+.mapping .m-table table { width: 100%; border-collapse: collapse; }
+.mapping .m-table th {
+  position: sticky; top: 0; z-index: 1; background: #333; text-align: left;
+  padding: 5px 8px; font-weight: 600; font-size: 12px;
+}
+.mapping .m-table td { padding: 2px 6px; border-top: 1px solid #343434; }
+.mapping .m-table td input { width: 100%; padding: 3px 6px; }
+.mapping .m-table td input:placeholder-shown { border-color: var(--danger); }
+.mapping .m-table td.inj { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.mapping .m-table tr.missing td.inj { color: var(--warn); }
+.mapping .m-groups { width: 300px; flex: 0 0 300px; }
+.mapping .m-groups .g {
+  display: flex; gap: 6px; align-items: center; padding: 3px 6px; border-top: 1px solid #343434;
+}
+.mapping .m-groups .g.head {
+  position: sticky; top: 0; background: #333; border-top: none; font-weight: 600; font-size: 12px;
+  padding: 5px 8px; justify-content: space-between;
+}
+.mapping .m-groups .g.active { background: #2b3a38; }
+.mapping .m-groups .g input { flex: 1; min-width: 0; padding: 3px 6px; }
+.mapping .m-groups .g .n {
+  color: var(--muted); font-size: 11px; white-space: nowrap; cursor: pointer; min-width: 44px;
+  text-align: right;
+}
+.mapping .m-groups .g .n.single { color: var(--warn); }
+.mapping .m-groups .g.head .n { cursor: default; color: var(--muted); font-weight: 400; }
+.mapping .m-foot { border-top: 1px solid var(--border); padding: 10px 16px; }
+.mapping .m-foot .notice { margin: 0; flex: 1 1 100%; }
+.mapping .m-empty {
+  flex: 1; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center;
+}
