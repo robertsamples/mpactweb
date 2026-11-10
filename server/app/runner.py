@@ -47,6 +47,10 @@ class _FormatCheckShim:
         print('warning: ' + str(message))
 
 
+class InputError(Exception):
+    """A problem with the inputs, reported to the user as written."""
+
+
 def _write_status(run, **fields):
     status = run.read_status() or {}
     status.update(fields)
@@ -63,8 +67,8 @@ def execute(session_id, run_id):
     # Imported here, not at module scope: on a spawn-based platform this
     # module is re-imported in a fresh interpreter, and the heavy scientific
     # stack should be loaded inside the child's own working directory setup.
-    from . import params as params_builder
-    from . import storage
+    from . import inspect as inspection, msdial, params as params_builder
+    from . import samplemap, storage
     from .core import MSFaST, biogroups, mzmineimport, translators
 
     session = storage.Session(session_id)
@@ -91,6 +95,10 @@ def execute(session_id, run_id):
         # own copy in rawdata/ and never on the library original.
         _stage(run, 'Converting peak table')
         peaktable = run.rawdata / request['inputs']['peaktable_name']
+        # An MS-DIAL export uploaded before newer versions' layouts were
+        # understood is still in the library as it came; lay it out the way
+        # the vendored reader expects. Already-converted files are untouched.
+        peaktable = msdial.normalize(peaktable) or peaktable
         shim = _FormatCheckShim(peaktable)
         detected = translators.detect_peaktable_format(peaktable)
         mzmineimport.format_check(shim)
@@ -115,14 +123,23 @@ def execute(session_id, run_id):
 
         # --- 2. biological groups (desktop: MainWindow.getgroups) ---------
         _stage(run, 'Resolving biological groups')
+        # This run's copies of the sheets, cut down to this peak table's
+        # injections with repeats collapsed, so a class's composite sample
+        # list and metadata work with any one dataset (see samplemap.py).
+        warnings.extend(samplemap.fit(inspection.injections_of(peaktable),
+                                      input_paths['samplelist'], input_paths['metadata']))
         groups, unresolved = biogroups.compute_biological_groups(
             input_paths['metadata'], input_paths['samplelist'], input_paths['peaktable'])
         if unresolved:
-            unique = sorted(set(map(str, unresolved)))
-            warnings.append(
-                f'{len(unique)} injection(s) had no matching Biological_Group and '
-                f'were skipped: {", ".join(unique[:10])}'
-                + (' ...' if len(unique) > 10 else ''))
+            # The pipeline looks every injection up and stops with a bare
+            # KeyError on the first one it can't find; say which, and how
+            # to fix it, before starting.
+            unique = list(dict.fromkeys(map(str, unresolved)))
+            raise InputError(
+                f'{len(unique)} injection(s) in the peak table have no Sample_Code and '
+                f'Biological_Group in the sample list and metadata: '
+                f'{", ".join(unique[:10])}' + (' ...' if len(unique) > 10 else '')
+                + '. Add them (File Selection > Edit) and run again.')
 
         # --- 3. parameters ------------------------------------------------
         params, model = params_builder.build_params(run, settings, groups, input_paths)
@@ -142,6 +159,11 @@ def execute(session_id, run_id):
                       groups=list(groups))
         print('--- analysis complete')
         return 0
+    except InputError as exc:
+        print(f'error: {exc}')
+        _write_status(run, state='failed', stage='failed', error=str(exc),
+                      finished_at=time.time(), warnings=warnings)
+        return 1
     except Exception as exc:  # noqa: BLE001 - report any pipeline failure verbatim
         traceback.print_exc()
         _write_status(run, state='failed', stage='failed', error=f'{type(exc).__name__}: {exc}',

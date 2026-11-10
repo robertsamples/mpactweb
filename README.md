@@ -49,14 +49,23 @@ docker compose run --rm mpactweb python /app/scripts/fetch_reference_data.py
 The workflow is the desktop's, tab for tab:
 
 1. **File Selection** — upload a peak table, sample list, metadata file and
-   (optionally) an MSP/MGF fragment database, or press **Load demo dataset**
-   to fill all four slots with the bundled PTY087I2 example (a four-group
-   *Streptomyces* cerium-elicitation study in technical triplicate). Each
-   upload is inspected on arrival: the peak-table format is detected,
-   required columns are checked, and the biological groups are derived so the
-   group pickers can be filled. Uploads stay in a per-session library, so a
-   second run with different parameters re-selects them instead of
-   re-uploading.
+   (optionally) an MSP/MGF fragment database, or pick a **demo dataset**: the
+   PTY087I2 example fills all four slots (a four-group *Streptomyces*
+   cerium-elicitation study in technical triplicate), and the CHM350 class
+   alignments fill the peak table and fragment slots, leaving the sample list
+   and metadata to be built with **Create…**. Each upload is inspected on
+   arrival: the peak-table format is detected, required columns are checked,
+   and the biological groups are derived so the group pickers can be filled.
+   Uploads stay in a per-session library, so a second run with different
+   parameters re-selects them instead of re-uploading.
+
+   MS-DIAL alignment exports are read as `.txt` or `.csv`, from the 5.4 layout
+   and the 5.5 one (five more annotation columns, and a `.csv` that leaves
+   quoted compound names half-escaped); `server/app/msdial.py` rewrites them
+   into the layout the vendored reader expects. A sample list and metadata
+   sheet may cover more samples than the peak table — a class's composite
+   sheets, say: each run uses only the rows its peak table needs, and repeated
+   rows are merged rather than stopping the run.
 2. **Filtering Settings** — mispicked peaks, blank filtering, CV
    (reproducibility) filtering, in-source fragment deconvolution.
 3. **Analysis Settings** — the two groups the statistics compare, the
@@ -186,9 +195,10 @@ All optional; every value has a working default.
 | `MPACT_TRUST_PROXY` | `false` | Read `X-Forwarded-For` (only behind your own proxy) |
 | `MPACT_DEV` | `false` | Put exception detail in API responses |
 
-The demo dataset ships in `server/data/demo/`. Remove that directory to hide
-the **Load demo dataset** button; the server then reports it as unavailable
-and the front end omits it.
+The demo datasets ship in `server/data/demo/` (the CHM350 ones as gzipped
+lean copies under `chm350/`, built by `scripts/build_demo_msdial.py`). A
+dataset whose files are missing is left out of the picker; remove the
+directory to hide the demo panel altogether.
 
 ## Authentication
 

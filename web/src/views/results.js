@@ -444,17 +444,19 @@ function multivariateView() {
       id: 'ordination', label: 'Multivariate',
       build: () => plotPanel({
         plot: 'ordination', tall: true,
-        initial: { method: 'PCA', view: 'Scores', replicates: 'Individual Injections' },
+        // NMDS of the biological replicates (technical replicates averaged)
+        // first; both can be changed from the bar.
+        initial: { method: 'NMDS', view: 'Scores', replicates: 'Biological Replicates' },
         options: (state) => ({ ...state, selected_feature: store.get('selectedFeature') }),
         controls: (state, actions, payload) => [
-          control('Method', select(payload ? payload.methods : ['PCA'], state.method,
+          control('Method', select(payload ? payload.methods : [state.method], state.method,
                                    (value) => { state.method = value; actions.fetchAndDraw(); })),
           control('View', select(payload ? payload.views : ['Scores'], state.view,
                                  (value) => { state.view = value; actions.fetchAndDraw(); })),
           // A named choice rather than a "collapse" checkbox: it says what
           // you get instead of what it does to something unnamed.
           control('Points', select(payload ? payload.replicate_views
-                                           : ['Individual Injections'],
+                                           : [state.replicates],
                                    state.replicates,
                                    (value) => { state.replicates = value; actions.fetchAndDraw(); })),
         ],

@@ -212,8 +212,9 @@ async function removeFile(id) {
 const deriveGroups = debounce(async () => {
   const inputs = store.get('inputs');
   if (!(inputs.peaktable && inputs.samplelist && inputs.metadata)) {
-    store.set({ groups: [], groupError: null, groupWarnings: [] });
+    store.set({ groups: [], groupError: null, groupWarnings: [], groupUnresolved: null });
     refreshFiles();
+    refreshRun();
     return;
   }
   store.set({ groupError: null });
@@ -223,7 +224,9 @@ const deriveGroups = debounce(async () => {
       samplelist: inputs.samplelist,
       metadata: inputs.metadata,
     });
-    store.set({ groups: body.groups, groupWarnings: body.warnings || [], groupError: null });
+    store.set({ groups: body.groups, groupWarnings: body.warnings || [], groupError: null,
+                groupUnresolved: body.unresolved_total
+                  ? { total: body.unresolved_total, names: body.unresolved || [] } : null });
     store.reconcileGroupsets(body.groups);
 
     // Seed the group pickers the way the desktop seeds its combo boxes, but
@@ -237,7 +240,7 @@ const deriveGroups = debounce(async () => {
     if (patch.blnkgrp === '' && current.blnkfltr) patch.blnkfltr = false;
     if (Object.keys(patch).length) updateSetting(patch);
   } catch (error) {
-    store.set({ groups: [], groupError: error.message, groupWarnings: [] });
+    store.set({ groups: [], groupError: error.message, groupWarnings: [], groupUnresolved: null });
   }
   refreshFiles();
   refreshFiltering();
@@ -341,58 +344,111 @@ function sessionPanel() {
   return panel;
 }
 
-/** "Try it with an example" -- loads the bundled PTY087I2 dataset into this
- *  session's library and selects it in all four slots. */
+/** Do the selected sample list and metadata say anything about this peak
+ *  table's injections? Used when a demo without its own sheets is loaded:
+ *  a class's composite sheets stay selected, another dataset's are cleared. */
+async function tablesFit(inputs) {
+  if (!inputs.peaktable || !inputs.samplelist) return false;
+  try {
+    const [peak, table] = await Promise.all([api.injections(inputs.peaktable),
+                                             api.readTable(inputs.samplelist)]);
+    const at = table.columns.indexOf('Injection');
+    if (at < 0) return false;
+    const names = new Set(peak.names);
+    return table.rows.some((row) => names.has(String(row[at] || '').trim()));
+  } catch {
+    return false;
+  }
+}
+
+/** "Try it with an example": the bundled datasets -- PTY087I2 with all four
+ *  files, and the CHM350 class alignments with a peak table and spectra. */
+let demoChoice = null;
+
 function demoPanel() {
   const info = store.get('demo');
-  if (!info || info.available === false) return null;
-
+  const datasets = ((info && info.datasets) || []).filter((d) => d.available);
+  if (!datasets.length) return null;
   const inputs = store.get('inputs');
-  const alreadyLoaded = store.get('files').some(
-    (file) => file.kind === 'peaktable' && inputs.peaktable === file.id
-              && file.name.includes('PTY087I2'));
+  const current = store.get('files').find((file) => file.id === inputs.peaktable);
+  // The one picked here, else the one already in the peak-table slot.
+  const chosen = datasets.find((d) => d.id === demoChoice)
+    || datasets.find((d) => current && d.peaktable === current.name)
+    || datasets.find((d) => d.id === info.default) || datasets[0];
+
+  const alreadyLoaded = Boolean(current && chosen.peaktable && current.name === chosen.peaktable);
+  const fullSet = chosen.kinds.includes('samplelist') && chosen.kinds.includes('metadata');
 
   const button = el('button', {
-    class: 'btn primary', text: alreadyLoaded ? 'Demo dataset loaded' : 'Load demo dataset',
+    class: 'btn primary', text: alreadyLoaded ? 'Loaded' : 'Load',
     disabled: alreadyLoaded,
   });
   button.addEventListener('click', async () => {
     button.disabled = true;
     button.textContent = 'Loading...';
     try {
-      const records = await api.loadDemo();
+      const records = await api.loadDemo(chosen.id);
       const merged = [...records];
       for (const file of store.get('files')) {
         if (!records.some((r) => r.id === file.id)) merged.push(file);
       }
       const picked = { ...store.get('inputs') };
       for (const record of records) picked[record.kind] = record.id;
+      // Nothing from the previous dataset is left in a slot this one doesn't
+      // fill -- except sheets that also cover this peak table (a class's
+      // composite sample list and metadata).
+      if (!records.some((r) => r.kind === 'fragments')) picked.fragments = null;
+      if (!fullSet && !(await tablesFit(picked))) {
+        picked.samplelist = null;
+        picked.metadata = null;
+      }
       store.set({ files: merged, inputs: picked });
+      // A dataset can come set up: the groups to compare, blank filtering,
+      // and its Plot Feature Sets (the CHM350 ones do).
+      if (chosen.preset) {
+        const { settings: patch = {}, groupsets = null } = chosen.preset;
+        store.set({ settings: { ...settings(), ...patch } });
+        if (groupsets) store.set({ groupsets, selectedGroupset: groupsets.length ? 0 : -1 });
+      }
       store.persistSetup();
       refreshFiles();
+      refreshFiltering();
+      refreshAnalysis();
       deriveGroups();
-      toast('Demo dataset loaded - go to Run, or change the settings first', 'ok');
+      toast(chosen.preset
+        ? `${chosen.name} loaded and set up - go to Run, or change the settings first`
+        : fullSet
+        ? `${chosen.name} loaded - go to Run, or change the settings first`
+        : picked.samplelist
+          ? `${chosen.name} loaded with the selected sample list and metadata`
+          : `${chosen.name} loaded - now create or select a sample list and metadata`, 'ok');
     } catch (error) {
       toast(error.message, 'error');
       button.disabled = false;
-      button.textContent = 'Load demo dataset';
+      button.textContent = 'Load';
     }
   });
 
+  const picker = select(
+    datasets.map((d) => [d.id, d.description ? `${d.name} · ${d.description}` : d.name]),
+    chosen.id,
+    (id) => { demoChoice = id; refreshFiles(); });
+
   // Collapsed by default: one line and a button is all most visitors need,
-  // and the dataset's description shouldn't push the real file pickers down
-  // the page every time.
+  // and the description shouldn't push the real file pickers down the page.
   return el('div', { class: 'panel' }, [
     el('div', { class: 'btn-row', style: { gap: '12px' } }, [
+      el('label', { class: 'check' }, [el('span', { class: 'muted', text: 'Demo dataset' }), picker]),
       button,
       collapsible({
-        title: 'New here? Load a demo dataset',
+        title: 'What is in it?',
         open: false,
         body: el('div', {}, [
-          el('p', { class: 'muted', style: { maxWidth: '70ch', margin: '0 0 6px' },
-                    text: info.summary || '' }),
-          el('p', { class: 'muted', style: { margin: '0' },
-                    text: 'Fills all four slots; you can still change any of them.' }),
+          el('p', { class: 'muted', style: { maxWidth: '70ch', margin: '0' },
+                    text: chosen.summary || '' }),
+          chosen.preset ? null : el('p', { class: 'muted', style: { margin: '6px 0 0' },
+                    text: fullSet ? 'Fills all four slots; you can still change any of them.'
+                                  : 'Fills the peak table and fragment database slots.' }),
         ]),
       }),
     ]),
@@ -781,6 +837,13 @@ function validate() {
   if (!inputs.samplelist) problems.push('Select a sample list.');
   if (!inputs.metadata) problems.push('Select a sample metadata file.');
   if (store.get('groupError')) problems.push(store.get('groupError'));
+  const unresolved = store.get('groupUnresolved');
+  if (unresolved && !store.get('groupError')) {
+    const shown = unresolved.names.slice(0, 3).join(', ');
+    problems.push(`${unresolved.total} peak-table injection${unresolved.total === 1 ? ' is' : 's are'} `
+                  + `not in the sample list and metadata (${shown}${unresolved.total > 3 ? ', …' : ''}). `
+                  + 'Add them with Edit on File Selection.');
+  }
   if (s.blnkfltr && !s.blnkgrp) problems.push('Blank filtering is on but no blank group is selected.');
   if (s.Ttest && !(s.expgrp && s.ctrgrp)) {
     problems.push('The t-test needs an experimental and a control group.');

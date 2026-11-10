@@ -16,12 +16,15 @@ exactly as the desktop converts in place.
 """
 
 import csv
+import json
 import shutil
+import tempfile
 import traceback
 from pathlib import Path
 
 import pandas as pd
 
+from . import msdial, samplemap
 from .core import biogroups, mzmineimport, translators
 
 MAX_PREVIEW_ROWS = 8
@@ -40,41 +43,18 @@ class _FormatCheckShim:
         self.messages.append(str(message))
 
 
-def _is_msdial_csv(path):
-    """True for an MS-DIAL alignment export saved as comma-separated text."""
-    try:
-        with open(path, newline='', encoding='utf-8-sig', errors='replace') as handle:
-            for index, row in enumerate(csv.reader(handle)):
-                if any(cell.strip() == 'Alignment ID' for cell in row):
-                    return True
-                if index >= 8:
-                    return False
-    except (OSError, csv.Error):
-        return False
-    return False
-
-
 def normalize_peaktable(path):
-    """Rewrite an MS-DIAL ``.csv`` export as the tab-separated ``.txt`` the
-    vendored ``reformat_msdial`` reads.
-
-    MS-DIAL writes the same alignment table as .txt (tab) or .csv (comma); the
-    desktop pipeline only reads the tab form, and the vendored core can't be
-    edited, so the conversion happens here, once, at upload. Returns the new
-    path, or ``None`` if the file needed nothing.
+    """Rewrite an MS-DIAL export (``.csv`` or ``.txt``, any version) as the
+    tab-separated layout the vendored ``reformat_msdial`` reads; see
+    ``msdial.py``. Returns the new path, or ``None`` if the file needed
+    nothing. Raises ``msdial.MsdialError`` for an export it can't lay out.
     """
-    path = Path(path)
-    if path.suffix.lower() != '.csv' or not _is_msdial_csv(path):
-        return None
-    target = path.with_suffix('.txt')
-    with open(path, newline='', encoding='utf-8-sig', errors='replace') as source, \
-            open(target, 'w', newline='', encoding='utf-8') as out:
-        for row in csv.reader(source):
-            out.write('\t'.join(cell.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')
-                                for cell in row))
-            out.write('\n')
-    path.unlink()
-    return target
+    return msdial.normalize(path)
+
+
+# Bumped whenever conversion changes, so previews cached by an older build
+# (which may have read a newer MS-DIAL export wrongly) are rebuilt.
+CANONICAL_VERSION = 2
 
 
 def canonical_peaktable(session, record):
@@ -85,28 +65,32 @@ def canonical_peaktable(session, record):
     """
     source = session.path_for(record)
     cache_dir = session.library_dir / record.dirname / 'canonical'
-    detected = translators.detect_peaktable_format(source)
-
-    if detected == translators.PROGENESIS:
-        # Already the internal layout -- but format_check still normalises
-        # duplicate compound ids for .csv inputs, which the analysis will do
-        # too, so run it on a copy rather than reading the original directly.
+    marker = cache_dir / '.format'
+    try:
+        cached = json.loads(marker.read_text())
+        path = cache_dir / cached['file']
+        if cached.get('version') == CANONICAL_VERSION and path.is_file():
+            return path, cached['format'], []
+    except (OSError, ValueError, KeyError, TypeError):
         pass
 
-    marker = cache_dir / '.format'
-    if marker.exists():
-        cached = next((p for p in cache_dir.glob('*') if p.is_file()
-                       and p.name != '.format'), None)
-        if cached is not None:
-            return cached, marker.read_text().strip(), []
-
+    shutil.rmtree(cache_dir, ignore_errors=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     working = cache_dir / source.name
     shutil.copy2(source, working)
+    # Uploads from before newer MS-DIAL exports were understood are still
+    # in the library in their original form; this is a no-op for the rest.
+    working = msdial.normalize(working) or working
+    detected = translators.detect_peaktable_format(working)
     shim = _FormatCheckShim(working)
     mzmineimport.format_check(shim)
-    marker.write_text(detected)
-    return Path(shim.filename), detected, shim.messages
+    # The converted file is named here rather than found by listing the
+    # directory: an MS-DIAL conversion leaves the .txt beside its .csv, and
+    # directory order differs between filesystems.
+    converted = Path(shim.filename)
+    marker.write_text(json.dumps({'format': detected, 'file': converted.name,
+                                  'version': CANONICAL_VERSION}))
+    return converted, detected, shim.messages
 
 
 def peaktable_summary(session, record):
@@ -140,9 +124,7 @@ def peaktable_summary(session, record):
 def peaktable_injections(session, record):
     """Every injection (sample column) name in a peak table, in file order."""
     path, _, _ = canonical_peaktable(session, record)
-    header = pd.read_csv(path, sep=',', header=None, index_col=[0, 1, 2],
-                         nrows=3, low_memory=False)
-    return [str(v) for v in header.iloc[2]]
+    return injections_of(path)
 
 
 REQUIRED_COLUMNS = {
@@ -250,14 +232,30 @@ def inspect_file(session, record):
 def biological_groups(session, peaktable, samplelist, metadata):
     """The biological groups an analysis of these three files would see.
 
-    Returns ``(groups, unresolved, warnings)``. Raises ``ValueError`` with the
-    pipeline's own message when the metadata/sample-list join fails, which is
-    the single most common input mistake.
+    The sheets are narrowed to this peak table first, exactly as a run's
+    copies are (``samplemap.fit``), so a composite class sheet previews the
+    way it will run. Returns ``(groups, unresolved, warnings)``. Raises
+    ``ValueError`` with the pipeline's own message when the metadata/sample
+    list join fails, which is the single most common input mistake.
     """
     canonical, _, warnings = canonical_peaktable(session, peaktable)
-    groups, unresolved = biogroups.compute_biological_groups(
-        session.path_for(metadata), session.path_for(samplelist), canonical)
+    injections = injections_of(canonical)
+    with tempfile.TemporaryDirectory() as scratch:
+        fitted_samples = Path(scratch) / 'samplelist.csv'
+        fitted_meta = Path(scratch) / 'metadata.csv'
+        shutil.copy2(session.path_for(samplelist), fitted_samples)
+        shutil.copy2(session.path_for(metadata), fitted_meta)
+        warnings = list(warnings) + samplemap.fit(injections, fitted_samples, fitted_meta)
+        groups, unresolved = biogroups.compute_biological_groups(
+            fitted_meta, fitted_samples, canonical)
     return groups, [str(u) for u in unresolved], warnings
+
+
+def injections_of(canonical):
+    """The injection names in a canonical peak table, in column order."""
+    header = pd.read_csv(canonical, sep=',', header=None, index_col=[0, 1, 2],
+                         nrows=3, low_memory=False)
+    return [str(v) for v in header.iloc[2]]
 
 
 def suggest_groups(groups):

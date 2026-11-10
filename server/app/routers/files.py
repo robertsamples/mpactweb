@@ -9,26 +9,40 @@ Every upload is inspected on arrival (format detection, column check, entry
 count) so mistakes surface at upload time rather than three tabs later.
 """
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 
-import shutil
 import time
 
-from .. import config, demo, inspect as inspection, mpctsession, storage
+from .. import config, demo, inspect as inspection, mpctsession, msdial, storage
 from ..deps import get_file, get_session
 from ..schemas import AnalysisSettings, FileOut, TableIn
 
 router = APIRouter(prefix='/api/files', tags=['files'])
 
 # Accepted extensions per slot. Peak tables are .csv (Progenesis / MZmine /
-# Metaboscape) or .txt (MS-DIAL alignment exports, which are tab separated).
+# Metaboscape / MS-DIAL) or .txt (MS-DIAL's tab-separated export).
 ALLOWED_SUFFIXES = {
     'peaktable': {'.csv', '.txt'},
     'samplelist': {'.csv'},
     'metadata': {'.csv'},
     'fragments': {'.msp', '.mgf'},
 }
+
+
+def _normalized(session, record):
+    """Rewrite an uploaded MS-DIAL peak table into the layout the pipeline
+    reads (see ``msdial.py``) and rename the record if that changed its
+    suffix. An export that can't be laid out is kept as uploaded; the
+    inspection that follows reports why."""
+    try:
+        converted = inspection.normalize_peaktable(session.path_for(record))
+    except msdial.MsdialError:
+        return record
+    if converted is None:
+        return record
+    return session.update_file(record.id, name=converted.name,
+                               size=converted.stat().st_size)
 
 
 def _as_out(record):
@@ -77,15 +91,12 @@ async def upload_file(
         session.remove_file(record.id)
         raise
 
+    record = session.update_file(record.id, size=written)
     if kind == 'peaktable':
-        converted = inspection.normalize_peaktable(target)
-        if converted is not None:
-            written = converted.stat().st_size
-            record = session.update_file(record.id, name=converted.name)
+        record = _normalized(session, record)
 
     detail = inspection.inspect_file(session, record)
-    record = session.update_file(record.id, size=written, detail=detail,
-                                 fmt=detail.get('format'))
+    record = session.update_file(record.id, detail=detail, fmt=detail.get('format'))
     return _as_out(record)
 
 
@@ -176,42 +187,57 @@ def create_table(payload: TableIn, session: storage.Session = Depends(get_sessio
 
 @router.get('/demo')
 def demo_info():
-    """Whether the bundled demo dataset is installed, and what it contains."""
+    """The bundled demo datasets and whether each is installed here."""
+    datasets = [dataset.describe() for dataset in demo.DATASETS]
     return {
-        'available': demo.available(),
-        'missing': demo.missing(),
-        **demo.DESCRIPTION,
+        'available': any(d['available'] for d in datasets),
+        'default': demo.DEFAULT,
+        'datasets': datasets,
     }
 
 
 @router.post('/demo', response_model=list[FileOut])
-def load_demo(session: storage.Session = Depends(get_session)):
-    """Copy the demo dataset into this session's library.
+def load_demo(payload: dict | None = Body(default=None),
+              session: storage.Session = Depends(get_session)):
+    """Copy a demo dataset into this session's library.
 
     Copied rather than referenced, so the demo behaves exactly like an upload
     from here on -- re-selectable, re-runnable, and deletable -- and so a run
     still converts its own copy of the peak table without touching the
-    pristine bundled one.
+    pristine bundled one. A dataset without a sample list or metadata (the
+    CHM350 ones) returns only the files it has.
 
     Calling it twice returns the existing entries instead of duplicating
     them, so a double click doesn't fill the library with copies.
     """
-    if not demo.available():
+    try:
+        dataset = demo.get((payload or {}).get('id'))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f'no demo dataset {exc}') from exc
+    if not dataset.available():
         raise HTTPException(
             status_code=503,
-            detail=f'the demo dataset is not installed on this server '
-                   f'(missing: {", ".join(demo.missing())})')
+            detail=f'the {dataset.name} demo dataset is not installed on this server '
+                   f'(missing: {", ".join(dataset.missing())})')
 
     existing = {(record.kind, record.name): record for record in session.files()}
     loaded = []
-    for kind, filename in demo.DEMO_FILES:
-        already = existing.get((kind, storage.safe_filename(filename)))
+    for kind, filename in dataset.files:
+        name = storage.safe_filename(demo.library_name(filename))
+        already = existing.get((kind, name))
         if already is not None:
             loaded.append(already)
             continue
-        source = demo.source_path(filename)
-        record = session.add_file(kind=kind, name=filename, size=source.stat().st_size)
-        shutil.copy2(source, session.path_for(record))
+        record = session.add_file(kind=kind, name=name, size=0)
+        try:
+            demo.copy_into(filename, session.path_for(record))
+            record = session.update_file(record.id,
+                                         size=session.path_for(record).stat().st_size)
+            if kind == 'peaktable':
+                record = _normalized(session, record)
+        except Exception:
+            session.remove_file(record.id)
+            raise
         detail = inspection.inspect_file(session, record)
         loaded.append(session.update_file(record.id, detail=detail, fmt=detail.get('format')))
 
@@ -277,10 +303,7 @@ async def import_session(
             record = session.add_file(kind=kind, name=safe, size=len(content))
             session.path_for(record).write_bytes(content)
             if kind == 'peaktable':
-                converted = inspection.normalize_peaktable(session.path_for(record))
-                if converted is not None:
-                    record = session.update_file(record.id, name=converted.name,
-                                                 size=converted.stat().st_size)
+                record = _normalized(session, record)
             detail = inspection.inspect_file(session, record)
             record = session.update_file(record.id, detail=detail,
                                          fmt=detail.get('format'))
@@ -331,8 +354,9 @@ def biological_groups(
 
     if unresolved:
         warnings = list(warnings) + [
-            f'{len(unresolved)} injection(s) missing from metadata -- the '
-            'biological group list may be incomplete']
+            f'{len(unresolved)} injection(s) in the peak table are not in the sample '
+            'list and metadata yet, so the group list is incomplete and the analysis '
+            'cannot run until they are added']
 
     return {
         'groups': [str(group) for group in groups],

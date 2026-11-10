@@ -14,7 +14,13 @@
  * the Biological_Group. Names containing a blank term all go to "Blank".
  * Controls with no marker token (media_1, Media2) can be grouped by their
  * trailing number, but only where those numbers run 1..n, so an ID such as
- * CR13 is never mistaken for a replicate. */
+ * CR13 is never mistaken for a replicate.
+ *
+ * With a peak table selected, the editor works on that peak table's
+ * injections. A sample list that also covers other datasets -- a class's
+ * composite sheet -- keeps its other rows exactly as they were when the
+ * edits are saved; only repeated rows are merged, since a repeat is what
+ * stops a run. */
 
 import { api } from '../api.js';
 import { store } from '../state.js';
@@ -192,9 +198,16 @@ function guessRules(names) {
       groups.get(key).push(number);
     }
     let covered = 0;
-    for (const numbers of groups.values()) if (isRun(numbers)) covered += numbers.length;
-    if (covered >= 4 && covered >= withToken * 0.6 && (!best || covered > best.covered)) {
-      best = { prefix, covered };
+    let runs = 0;
+    for (const numbers of groups.values()) {
+      if (isRun(numbers)) { covered += numbers.length; runs += 1; }
+    }
+    // Two markers can explain the same samples (MJS_C1_S1_...: two cultures
+    // C1/C2, biological replicates S1-S3). Prefer the one leaving fewer,
+    // larger groups: replicates are the bigger sets.
+    if (covered >= 4 && covered >= withToken * 0.6
+        && (!best || covered > best.covered || (covered === best.covered && runs < best.runs))) {
+      best = { prefix, covered, runs };
     }
   }
   if (best) Object.assign(rules, { bioOn: true, bio: best.prefix });
@@ -257,15 +270,20 @@ function sequenceNames(sequence) {
 // Dialog
 // --------------------------------------------------------------------------
 
+/** Rows by key (first occurrence wins), cells trimmed the way the run trims
+ *  them, and how many later rows repeat a key already seen. */
 function tableIndex(table, keyColumn) {
   const byKey = new Map();
-  const keyAt = table.columns.indexOf(keyColumn);
-  if (keyAt < 0) return byKey;
+  let repeats = 0;
+  if (table.columns.indexOf(keyColumn) < 0) return { byKey, repeats };
   for (const row of table.rows) {
-    const record = Object.fromEntries(table.columns.map((c, i) => [c, row[i] ?? '']));
-    if (record[keyColumn] && !byKey.has(record[keyColumn])) byKey.set(record[keyColumn], record);
+    const record = Object.fromEntries(table.columns.map((c, i) => [c, String(row[i] ?? '').trim()]));
+    const key = record[keyColumn];
+    if (!key) continue;
+    if (byKey.has(key)) repeats += 1;
+    else byKey.set(key, record);
   }
-  return byKey;
+  return { byKey, repeats };
 }
 
 const stem = (name) => String(name || 'samples').replace(/\.[^.]+$/, '');
@@ -308,10 +326,11 @@ export async function openMappingEditor({ mode = 'new', onSaved } = {}) {
     ]);
     if (peak) state.peakNames = peak.names;
     if (sample && meta) {
+      const samples = tableIndex(sample, 'Injection');
+      const metas = tableIndex(meta, 'Sample_Code');
       state.tables = {
-        sample, meta,
-        sampleRows: tableIndex(sample, 'Injection'),
-        metaRows: tableIndex(meta, 'Sample_Code'),
+        sample, meta, sampleRows: samples.byKey, metaRows: metas.byKey,
+        repeats: samples.repeats + metas.repeats,
       };
     }
   } catch (error) {
@@ -330,8 +349,10 @@ export async function openMappingEditor({ mode = 'new', onSaved } = {}) {
     if (!state.rules || state.rulesOn) state.rules = guessRules(state.names);
   };
 
-  if (state.tables) setSource('samplelist');
-  else if (state.peakNames) setSource('peaktable');
+  // The selected peak table's injections when there is one: rows a composite
+  // sample list holds for other datasets are left alone.
+  if (state.peakNames) setSource('peaktable');
+  else if (state.tables) setSource('samplelist');
   else setSource('sequence');
 
   const sequenceInput = el('input', {
@@ -598,6 +619,23 @@ export async function openMappingEditor({ mode = 'new', onSaved } = {}) {
       if (unmapped) notes.push(el('span', { class: 'warn', text: `${unmapped} peak-table injections not listed` }));
       if (!absent && !unmapped) notes.push(el('span', { class: 'okay', text: 'matches peak table' }));
     }
+    if (state.tables) {
+      const shown = new Set(state.names);
+      const others = [...state.tables.sampleRows.keys()].filter((n) => !shown.has(n)).length;
+      const added = state.names.filter((n) => !state.tables.sampleRows.has(n)).length;
+      if (added && state.source !== 'samplelist') {
+        notes.push(el('span', { class: 'warn', text: `${added} not in the sample list yet` }));
+      }
+      if (others) {
+        notes.push(el('span', { class: 'muted', text: `${others} other injection${others === 1 ? '' : 's'} `
+                                                      + 'in the list kept as they are' }));
+      }
+      const repeats = state.tables.repeats;
+      if (repeats) {
+        notes.push(el('span', { class: 'muted', text: `${repeats} repeated row${repeats === 1 ? '' : 's'} `
+                                                      + 'will be merged' }));
+      }
+    }
     const empty = rows.filter((r) => !r.sample || !r.group).length;
     if (empty) notes.push(el('span', { class: 'bad', text: `${empty} incomplete` }));
 
@@ -671,18 +709,28 @@ export async function openMappingEditor({ mode = 'new', onSaved } = {}) {
     const sampleColumns = ensure(t ? t.sample.columns : [], ['Injection', 'Sample_Code']);
     const metaColumns = ensure(t ? t.meta.columns : [], ['Sample_Code', 'Biological_Group']);
 
-    const sampleRows = rows.map((row) => {
+    const editedSample = (row) => {
       const extra = (t && t.sampleRows.get(row.name)) || {};
       return sampleColumns.map((c) => (c === 'Injection' ? row.name
         : c === 'Sample_Code' ? row.sample : String(extra[c] ?? '')));
-    });
+    };
     const groupOf = new Map();
     for (const row of rows) if (!groupOf.has(row.sample)) groupOf.set(row.sample, row.group);
-    const metaRows = [...groupOf].map(([code, group]) => {
+    const editedMeta = (code, group) => {
       const extra = (t && t.metaRows.get(code)) || {};
       return metaColumns.map((c) => (c === 'Sample_Code' ? code
         : c === 'Biological_Group' ? group : String(extra[c] ?? '')));
-    });
+    };
+
+    let sampleRows;
+    let metaRows;
+    if (state.mode === 'edit' && t) {
+      ({ sampleRows, metaRows } = mergeTables(t, rows, groupOf, sampleColumns,
+                                               editedSample, editedMeta));
+    } else {
+      sampleRows = rows.map(editedSample);
+      metaRows = [...groupOf].map(([code, group]) => editedMeta(code, group));
+    }
 
     try {
       let saved;
@@ -713,6 +761,55 @@ export async function openMappingEditor({ mode = 'new', onSaved } = {}) {
   render();
 }
 
+/** The edited rows merged back into the full sample list and metadata.
+ *
+ * Rows the editor showed are replaced by their edited versions and new ones
+ * are added; every other row is kept as it was, in its place. A repeated key
+ * keeps its first row (a repeat is what stops a run); a row missing its key
+ * or its value is of no use to any analysis and is dropped; and a metadata
+ * row is dropped only when this edit moved every injection off it. */
+function mergeTables(t, rows, groupOf, sampleColumns, editedSample, editedMeta) {
+  const shown = new Map(rows.map((row) => [row.name, row]));
+  const record = (table, row) => Object.fromEntries(table.columns.map((c, i) => [c, row[i] ?? '']));
+
+  const sampleRows = [];
+  const seen = new Set();
+  for (const row of t.sample.rows) {
+    const values = record(t.sample, row);
+    const key = String(values.Injection || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    if (shown.has(key)) sampleRows.push(editedSample(shown.get(key)));
+    else if (String(values.Sample_Code || '').trim()) {
+      sampleRows.push(editedSample({ name: key, sample: String(values.Sample_Code).trim() }));
+    }
+  }
+  for (const row of rows) {
+    if (!seen.has(row.name)) { seen.add(row.name); sampleRows.push(editedSample(row)); }
+  }
+
+  const codeAt = sampleColumns.indexOf('Sample_Code');
+  const used = new Set(sampleRows.map((row) => row[codeAt]));
+  const before = new Set(rows.map((row) => (t.sampleRows.get(row.name) || {}).Sample_Code)
+    .filter(Boolean).map((code) => String(code).trim()));
+  const metaRows = [];
+  const codes = new Set();
+  for (const row of t.meta.rows) {
+    const values = record(t.meta, row);
+    const code = String(values.Sample_Code || '').trim();
+    if (!code || codes.has(code) || (before.has(code) && !used.has(code))) continue;
+    codes.add(code);
+    if (groupOf.has(code)) metaRows.push(editedMeta(code, groupOf.get(code)));
+    else if (String(values.Biological_Group || '').trim()) {
+      metaRows.push(editedMeta(code, String(values.Biological_Group).trim()));
+    }
+  }
+  for (const [code, group] of groupOf) {
+    if (!codes.has(code)) { codes.add(code); metaRows.push(editedMeta(code, group)); }
+  }
+  return { sampleRows, metaRows };
+}
+
 // Exposed for tests and the console.
 export const _rules = { tokenize, sampleFor, groupsFor, guessRules, parseDelimited,
-                        sequenceHeader, sequenceNames };
+                        sequenceHeader, sequenceNames, mergeTables, tableIndex };

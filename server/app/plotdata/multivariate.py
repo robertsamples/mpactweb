@@ -31,6 +31,11 @@ VIEWS = ('Scores', 'Loadings')
 #                            biological replicates kept separate
 REPLICATE_VIEWS = (labelutil.INJECTIONS, labelutil.BIOLOGICAL)
 
+# What the Multivariate tab first shows: NMDS of the biological replicates
+# (technical replicates averaged). Both stay changeable in the tab.
+DEFAULT_METHOD = 'NMDS'
+DEFAULT_REPLICATES = labelutil.BIOLOGICAL
+
 # Group colour cycle from ``plot_ordination`` -- kept in the same order so a
 # given group gets the same colour it does on the desktop.
 GROUP_COLORS = (
@@ -71,13 +76,14 @@ def _confidence_ellipse(points, nstd=2):
 
 def ordination_plot(results, options=None):
     options = options or {}
-    method = options.get('method', 'PCA')
+    method = options.get('method', DEFAULT_METHOD)
     view = options.get('view', 'Scores')
     # The old boolean is still accepted so a stored option set keeps working.
     replicates = options.get('replicates')
     if replicates is None:
-        replicates = (labelutil.BIOLOGICAL if options.get('collapse_replicates')
-                      else labelutil.INJECTIONS)
+        collapse = options.get('collapse_replicates')
+        replicates = (DEFAULT_REPLICATES if collapse is None
+                      else labelutil.BIOLOGICAL if collapse else labelutil.INJECTIONS)
     if replicates not in REPLICATE_VIEWS:
         raise ValueError(f'replicates must be one of {", ".join(REPLICATE_VIEWS)}')
     collapse = replicates == labelutil.BIOLOGICAL

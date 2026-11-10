@@ -77,7 +77,7 @@ export const api = {
   replaceTable: (id, table) => json('PUT', `/api/files/${id}/table`, table),
   createTable: (table) => json('POST', '/api/files/table', table),
   demoInfo: () => request('/api/files/demo'),
-  loadDemo: () => json('POST', '/api/files/demo', {}),
+  loadDemo: (id) => json('POST', '/api/files/demo', id ? { id } : {}),
 
   /** Open a saved .mpct session: the desktop's File > Open. Returns the
    *  library records it created plus the settings to restore. */
