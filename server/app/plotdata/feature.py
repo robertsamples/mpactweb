@@ -66,12 +66,28 @@ def _build_filters(spec):
                 filters[index] = treefilters.RangeFilter(
                     None if minimum is None else float(minimum),
                     None if maximum is None else float(maximum))
-        elif column['type'] == 'category' and entry.get('allowed'):
-            filters[index] = treefilters.CategoryFilter(frozenset(entry['allowed']))
+        elif column['type'] == 'category':
+            required = frozenset(entry.get('required') or ())
+            excluded = frozenset(entry.get('excluded') or ())
+            if required or excluded:
+                filters[index] = SetFilter(required, excluded)
+            elif entry.get('allowed'):
+                filters[index] = treefilters.CategoryFilter(frozenset(entry['allowed']))
     return filters
 
 
-def feature_table(results, options=None):
+class SetFilter:
+    """Every ``required`` token present and no ``excluded`` token."""
+
+    def __init__(self, required, excluded):
+        self.required, self.excluded = required, excluded
+
+    def matches(self, value):
+        tokens = set(str(value or '').split())
+        return self.required <= tokens and not (self.excluded & tokens)
+
+
+def feature_table(results, options=None, ms2_ids=None):
     """The feature table: filtered, sorted, and unpaged by default.
 
     Sorting and filtering happen server-side over the whole set so the client
@@ -95,6 +111,17 @@ def feature_table(results, options=None):
             iondict = iondict[iondict['Compound'].astype(str).isin(surviving)]
         except Exception:  # noqa: BLE001 - an unreadable filtered table shouldn't
             pass          # empty the whole view; fall back to showing everything
+
+    if ms2_ids is not None:
+        iondict = iondict[iondict['Compound'].astype(str).isin(ms2_ids)]
+
+    hit_spec = None
+    if options.get('hit_filter'):
+        from . import hits
+        hit_spec = hits.normalise(options['hit_filter'])
+        if hit_spec:
+            passing = hits.passing_features(results, hit_spec)
+            iondict = iondict[iondict['Compound'].astype(str).isin(passing)]
 
     rows = [
         tuple(row.get(column['key']) for column in TABLE_COLUMNS)
@@ -154,6 +181,7 @@ def feature_table(results, options=None):
         'offset': offset,
         'limit': limit,
         'include_filtered': bool(options.get('include_filtered', False)),
+        'hit_filter': bool(hit_spec),
         'searched': bool('hits' in iondict.columns and iondict['hits'].notna().any()),
         'categories': treefilters.distinct_category_tokens(
             iondict['groups'].fillna('').tolist()) if 'groups' in iondict else [],
@@ -292,19 +320,52 @@ def combined_atlas():
     return pd.concat(frames) if len(frames) > 1 else frames[0]
 
 
-def load_atlas(kingdom='', genus=''):
+def load_atlas(kingdom='', genus='', taxon_level='', taxon=''):
     """Load NPAtlas, applying the same origin/genus narrowing the desktop
-    applies in ``enumerate_inputs``.
+    applies in ``enumerate_inputs``, or the web's any-rank ``taxon``.
 
     The >3-character test is the desktop's own guard: it treats a short value
     as "nothing selected" rather than a real filter.
     """
     atlas = combined_atlas()
+    taxon = str(taxon or '').strip()
+    if taxon:
+        return _narrow_by_taxon(atlas, str(taxon_level or '').lower(), taxon)
     if len(str(kingdom or '')) > 3:
         atlas = atlas[atlas['origin_type'] == kingdom]
     if len(str(genus or '')) > 3:
         atlas = atlas[atlas['genus'] == genus]
     return atlas
+
+
+def atlas_for(params):
+    """The atlas narrowed by a run's parameters."""
+    return load_atlas(params.get('kingdom', ''), params.get('genus', ''),
+                      params.get('taxon_level', ''), params.get('taxon', ''))
+
+
+def _narrow_by_taxon(atlas, level, taxon):
+    value = taxon.lower()
+    genus = atlas['genus'].fillna('').astype(str)
+    if level == 'kingdom':
+        keep = atlas['origin_type'].fillna('').astype(str).str.lower() == value
+    elif level == 'genus':
+        keep = genus.str.lower() == value
+    elif level == 'species':
+        species = (genus + ' ' + atlas['origin_species'].fillna('').astype(str)).str.strip().str.lower()
+        keep = (species == value) | species.str.startswith(value + ' ')
+    elif level in ('phylum', 'class', 'order', 'family'):
+        from .hits import _lineage
+        lineage = _lineage()
+        if lineage is None:
+            raise FileNotFoundError('npatlas_taxonomy.tsv is not installed on this server')
+        rows = lineage[lineage[level].str.lower() == value]
+        pairs = set(zip(rows['origin_type'], rows['genus']))
+        keep = pd.Series([(o, g) in pairs for o, g in
+                          zip(atlas['origin_type'].fillna(''), genus)], index=atlas.index)
+    else:
+        raise ValueError(f'unknown taxonomic level {level!r}')
+    return atlas[keep.to_numpy()]
 
 
 def matches_for_mass(atlas, mass, ppm_threshold):
@@ -323,8 +384,9 @@ def matches_for_mass(atlas, mass, ppm_threshold):
         hits.append(selected)
     combined = pd.concat(hits).sort_values(by=['ppm'])
     return [
-        {key: clean(row.get(key)) for key, _ in ATLAS_FIELDS}
-        for _, row in combined.iterrows()
+        {'compound_id': clean(index),
+         **{key: clean(row.get(key)) for key, _ in ATLAS_FIELDS}}
+        for index, row in combined.iterrows()
     ]
 
 

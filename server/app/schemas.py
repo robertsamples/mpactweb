@@ -91,6 +91,10 @@ class AnalysisSettings(BaseModel):
     ppmthresh: float = 10.0                 # lineEdit_ppmthresh
     kingdom: str = ''                       # combo_kingdom ('', Bacterium, Fungus)
     genus: str = ''                         # lineEdit_genus
+    # Web-only: narrow the search at any rank (kingdom ... species). When set,
+    # it supersedes kingdom/genus, which are still filled for the desktop.
+    taxon_level: str = ''
+    taxon: str = ''
 
     # --- Plot Feature Sets ------------------------------------------------
     # Empty means "use the desktop's implicit default": one set covering every

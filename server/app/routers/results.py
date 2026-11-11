@@ -1,9 +1,11 @@
 """Results: plot data, the feature table, database search, and downloads."""
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
@@ -11,6 +13,7 @@ from .. import plotdata, storage
 from ..core import dbsearch, getfragdb
 from ..deps import get_results, get_run
 from ..plotdata import feature as featuredata
+from ..plotdata import hits as hitdata
 from ..results import RunResults
 
 router = APIRouter(prefix='/api/runs/{run_id}', tags=['results'])
@@ -59,13 +62,42 @@ def plot_payload(name: str, options: dict | None = None,
 
 
 @router.post('/features')
-def feature_table(options: dict | None = None,
+def feature_table(options: dict | None = None, run=Depends(get_run),
                   results: RunResults = Depends(get_results)):
     """Paged/filtered/sorted feature table (the desktop's search tree)."""
+    options = options or {}
+    fragpath = _fragment_path(run)
+    ms2 = _fragment_ids(fragpath) if fragpath and options.get('ms2_only') else None
     try:
-        return featuredata.feature_table(results, options or {})
+        table = featuredata.feature_table(results, options, ms2_ids=ms2)
+        table['has_fragments'] = fragpath is not None
+        return table
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get('/taxa')
+def taxa(level: str = Query(..., max_length=16), q: str = Query('', max_length=200),
+         results: RunResults = Depends(get_results)):
+    """Taxon names at one level, for the hit filter's suggestions."""
+    try:
+        return {'level': level, 'names': hitdata.suggest_taxa(results.params(), level, q)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get('/substructure/check')
+def substructure_check(query: str = Query(..., min_length=1, max_length=2000)):
+    """Whether a substructure query parses."""
+    try:
+        hitdata.parse_query(query)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {'ok': True}
 
 
 # Compound ids are taken as a query parameter, never a path segment.
@@ -119,6 +151,32 @@ def feature_spectrum(compound: str = CompoundParam, run=Depends(get_run),
     return featuredata.spectrum(results, fragdb, compound)
 
 
+def _fragment_path(run):
+    request = run.read_request() or {}
+    name = (request.get('inputs') or {}).get('fragments_name')
+    path = run.rawdata / name if name else None
+    return path if path is not None and path.exists() else None
+
+
+_FRAGMENT_IDS = {}
+
+
+def _fragment_ids(path: Path):
+    """Compound ids with a non-empty spectrum in the fragment database."""
+    key = (str(path), path.stat().st_mtime_ns)
+    ids = _FRAGMENT_IDS.get(key)
+    if ids is None:
+        fragdb = _load_fragdb(path)
+        ids = set()
+        for compound, entry in getattr(fragdb, 'ions', {}).items():
+            pattern = np.asarray(getattr(entry, 'pattern', []), dtype=float)
+            if pattern.ndim == 2 and pattern.shape[0] > 0:
+                ids.add(str(compound))
+        _FRAGMENT_IDS.clear()
+        _FRAGMENT_IDS[key] = ids
+    return ids
+
+
 _FRAGDB_CACHE = {}
 
 
@@ -139,24 +197,37 @@ def _load_fragdb(path: Path):
 
 @router.get('/feature/matches')
 def feature_matches(compound: str = CompoundParam,
+                    filter: str = Query('', max_length=4000),
                     results: RunResults = Depends(get_results)):
-    """NPAtlas mass matches for one feature, within the run's ppm window."""
+    """NPAtlas mass matches for one feature, within the run's ppm window.
+    ``filter`` is an optional JSON hit-filter spec; each match then carries
+    ``passes``."""
     params = results.params()
+    try:
+        spec = hitdata.normalise(json.loads(filter)) if filter else None
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     detail = featuredata.feature_detail(results, compound)
     mass = detail['fields'].get('m/z')
     if mass is None:
         raise HTTPException(status_code=422, detail=f'{compound} has no m/z')
     try:
-        atlas = featuredata.load_atlas(params.get('kingdom', ''), params.get('genus', ''))
+        atlas = featuredata.atlas_for(params)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     matches = featuredata.matches_for_mass(atlas, mass, params.get('ppmthresh', 10))
+    try:
+        matches = hitdata.annotate_matches(params, matches, spec)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         'feature': compound,
         'mz': mass,
         'ppm_threshold': params.get('ppmthresh', 10),
         'kingdom': params.get('kingdom', ''),
         'genus': params.get('genus', ''),
+        'taxon_level': params.get('taxon_level', ''),
+        'taxon': params.get('taxon', ''),
         'fields': [{'key': key, 'label': label} for key, label in featuredata.ATLAS_FIELDS],
         'matches': matches,
     }
@@ -177,7 +248,7 @@ def run_database_search(results: RunResults = Depends(get_results)):
     """
     params = results.params()
     try:
-        atlas = featuredata.load_atlas(params.get('kingdom', ''), params.get('genus', ''))
+        atlas = featuredata.atlas_for(params)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -191,6 +262,8 @@ def run_database_search(results: RunResults = Depends(get_results)):
         'ppm_threshold': params.get('ppmthresh', 10),
         'kingdom': params.get('kingdom', ''),
         'genus': params.get('genus', ''),
+        'taxon_level': params.get('taxon_level', ''),
+        'taxon': params.get('taxon', ''),
     }
 
 

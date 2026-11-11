@@ -295,6 +295,72 @@ def test_database_search_finds_matches(client, completed_run):
     assert top[0] and top[0] > 0, f'top of a hits-descending sort is {top[:5]}'
 
 
+def _hit_table(client, run, spec):
+    response = client.post(f'/api/runs/{run}/features',
+                           json={'limit': 0, 'hit_filter': spec})
+    if response.status_code == 503:
+        pytest.skip('npatlas.tsv is not installed on this server')
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_hit_filters_narrow_the_table(client, completed_run):
+    everything = _hit_table(client, completed_run, None)
+    assert not everything['hit_filter']
+    ids = {row[0] for row in everything['rows']}
+    for spec in ({'name': 'mycin'},
+                 {'taxon': {'level': 'genus', 'value': 'Streptomyces'}},
+                 {'taxon': {'level': 'phylum', 'value': 'actinomycetota'}},
+                 {'activity': ['siderophore']},
+                 {'activity': ['electrophile', 'chromophore'], 'chromophore_min': 14},
+                 {'substructure': 'c1ccccc1O'}):
+        body = _hit_table(client, completed_run, spec)
+        assert body['hit_filter'], spec
+        subset = {row[0] for row in body['rows']}
+        assert subset and subset <= ids, spec
+        assert len(subset) < len(ids), spec
+
+
+def test_hit_criteria_apply_to_the_same_hit(client, completed_run):
+    name = {row[0] for row in _hit_table(client, completed_run, {'name': 'mycin'})['rows']}
+    epoxide = {row[0] for row in
+               _hit_table(client, completed_run, {'substructure': 'C1OC1'})['rows']}
+    both = {row[0] for row in _hit_table(
+        client, completed_run, {'name': 'mycin', 'substructure': 'C1OC1'})['rows']}
+    assert both <= name & epoxide
+
+
+def test_bad_hit_filters_are_422(client, completed_run):
+    for spec in ({'substructure': 'not a molecule (('},
+                 {'taxon': {'level': 'subphylum', 'value': 'x'}}):
+        response = client.post(f'/api/runs/{completed_run}/features',
+                               json={'limit': 0, 'hit_filter': spec})
+        assert response.status_code in (422, 503), response.text
+
+
+def test_taxon_suggestions(client, completed_run):
+    response = client.get(f'/api/runs/{completed_run}/taxa',
+                          params={'level': 'genus', 'q': 'actino'})
+    if response.status_code == 503:
+        pytest.skip('npatlas.tsv is not installed on this server')
+    names = [entry['name'] for entry in response.json()['names']]
+    assert names and all('actino' in name.lower() for name in names)
+    assert names[0].lower().startswith('actino')
+
+
+def test_matches_report_whether_they_pass_the_hit_filter(client, completed_run):
+    body = _hit_table(client, completed_run, {'name': 'mycin'})
+    compound = body['rows'][0][0]
+    import json
+    matches = client.get(f'/api/runs/{completed_run}/feature/matches',
+                         params={'compound': compound,
+                                 'filter': json.dumps({'name': 'mycin'})}).json()['matches']
+    assert any(match['passes'] for match in matches)
+    assert all(match['passes'] == ('mycin' in (match['compound_name'] or '').lower())
+               for match in matches)
+    assert all('siderophore' in match for match in matches)
+
+
 def test_upset_reports_set_totals(client, completed_run):
     """The classic UpSet layout needs per-set totals for its left-hand bars,
     not just the intersection sizes."""
@@ -313,3 +379,10 @@ def test_results_before_completion_are_409(client):
     """A run id that exists but has no results yields 409, not 404 -- the
     client distinguishes 'keep polling' from 'gone'."""
     assert client.get('/api/runs/r_0000000000000000/plots').status_code == 404
+
+
+def test_without_a_fragment_file_ms2_only_is_unavailable(client, completed_run):
+    body = client.post(f'/api/runs/{completed_run}/features',
+                       json={'limit': 0, 'ms2_only': True}).json()
+    assert body['has_fragments'] is False
+    assert body['total'] > 0

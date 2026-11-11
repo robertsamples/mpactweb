@@ -31,6 +31,8 @@ const initial = () => ({
   selectedFeature: null,
   selectedSample: null,
   selectedSampleGroup: null,   // biological group of the picked injection
+  hitFilter: null,          // active Feature Info hit filter spec, or null
+  plotFilter: { active: false, run: null, ids: null },   // Feature Info rows, for plots
   view: 'files',
 });
 

@@ -21,18 +21,31 @@
 import { api } from '../api.js';
 import { store } from '../state.js';
 import { clear, debounce, el, num, toast } from '../util.js';
+import { openSketcher } from './sketcher.js';
+import { taxonPicker } from './taxonpicker.js';
 
 const ROW_HEIGHT = 25;      // must match `table.features tbody tr` height in app.css
 const OVERSCAN = 12;        // rows rendered beyond the viewport, each side
 
 const runId = () => (store.get('run') || {}).run_id;
 
+const DEFAULT_CHROMOPHORE_MIN = 14;
+
+const emptyHitFilter = () => ({
+  name: '', taxon: { level: 'genus', value: '' }, substructure: '',
+  activity: [], chromophore_min: DEFAULT_CHROMOPHORE_MIN,
+});
+
+const hitFilterActive = (spec) => Boolean(spec.name.trim() || spec.taxon.value.trim()
+  || spec.substructure || spec.activity.length);
+
 export function buildFeatureInfoView() {
   const node = el('div', { class: 'plot-view features-view' });
 
   // include_filtered false == only features that survived filtering, which is
   // what the desktop's tree lists.
-  const query = { sort: 'm/z', descending: false, filters: {}, include_filtered: false };
+  const query = { sort: 'm/z', descending: false, filters: {}, include_filtered: false,
+                  ms2_only: false, hit_filter: emptyHitFilter() };
   let table = null;             // last response
   let rowIndex = new Map();     // compound -> row position, for keyboard nav
   let autoSearched = false;     // the one-off NPAtlas search has been attempted
@@ -49,7 +62,8 @@ export function buildFeatureInfoView() {
   const counts = el('span', { class: 'status' });
 
   const toolbar = el('div', { class: 'plot-toolbar' });
-  const tablePane = el('div', { class: 'table-pane' }, [toolbar, scroller]);
+  const hitBar = el('div', { class: 'plot-toolbar hit-filters' });
+  const tablePane = el('div', { class: 'table-pane' }, [toolbar, hitBar, scroller]);
 
   // The details rail is the app's own right-hand panel, shared with every
   // plot view, so a feature looks the same wherever it is inspected and
@@ -139,12 +153,14 @@ export function buildFeatureInfoView() {
     return categoryFilter(column);
   }
 
-  /** A checkbox popup, the web form of the desktop's category filter (a
-   *  QToolButton whose menu holds one checkable action per token). Ticking a
-   *  box filters immediately and leaves the popup open, so several sets can
-   *  be picked in a row. */
+  /** A popup of three-state boxes, one per set: required, excluded, or
+   *  unconstrained. Filters immediately and stays open. */
   function categoryFilter(column) {
-    const chosen = new Set(((query.filters[column.key] || {}).allowed) || []);
+    const saved = query.filters[column.key] || {};
+    const state = new Map([
+      ...(saved.required || saved.allowed || []).map((token) => [token, 'in']),
+      ...(saved.excluded || []).map((token) => [token, 'out']),
+    ]);
     const label = el('span', { class: 'cat-label' });
     const menu = el('div', { class: 'cat-menu hidden' });
     const button = el('button', {
@@ -154,15 +170,25 @@ export function buildFeatureInfoView() {
     const node = el('div', { class: 'cat-filter' }, [button, menu]);
     let tokens = [];
 
+    const MARK = { in: '✓', out: '✗' };
+    const NEXT = { undefined: 'in', in: 'out', out: undefined };
+
+    function spec() {
+      const pick = (wanted) => [...state].filter(([, v]) => v === wanted).map(([t]) => t);
+      return state.size ? { required: pick('in'), excluded: pick('out') } : null;
+    }
+
     function syncLabel() {
-      label.textContent = chosen.size === 0 ? 'All'
-        : chosen.size === 1 ? [...chosen][0]
-        : `${chosen.size} selected`;
-      node.classList.toggle('active', chosen.size > 0);
+      if (state.size === 0) label.textContent = 'All';
+      else if (state.size === 1) {
+        const [[token, value]] = [...state];
+        label.textContent = `${MARK[value]} ${token}`;
+      } else label.textContent = `${state.size} selected`;
+      node.classList.toggle('active', state.size > 0);
     }
 
     function apply() {
-      query.filters[column.key] = chosen.size ? { allowed: [...chosen] } : null;
+      query.filters[column.key] = spec();
       syncLabel();
       reload();
     }
@@ -170,8 +196,10 @@ export function buildFeatureInfoView() {
     function toggle(open) {
       const show = open === undefined ? menu.classList.contains('hidden') : open;
       // Only one popup at a time.
-      for (const other of document.querySelectorAll('.cat-menu')) {
-        if (other !== menu) other.classList.add('hidden');
+      if (show) {
+        for (const other of document.querySelectorAll('.cat-menu')) {
+          if (other !== menu) other.classList.add('hidden');
+        }
       }
       menu.classList.toggle('hidden', !show);
     }
@@ -188,8 +216,8 @@ export function buildFeatureInfoView() {
 
       // Drop a chosen token the run no longer has (a different run, say).
       let dropped = false;
-      for (const token of [...chosen]) {
-        if (!tokens.includes(token)) { chosen.delete(token); dropped = true; }
+      for (const token of [...state.keys()]) {
+        if (!tokens.includes(token)) { state.delete(token); dropped = true; }
       }
 
       clear(menu);
@@ -197,21 +225,25 @@ export function buildFeatureInfoView() {
         menu.append(el('div', { class: 'cat-empty muted', text: 'No sets in this run' }));
       }
       for (const token of tokens) {
-        menu.append(el('label', { class: 'cat-option' }, [
-          el('input', {
-            type: 'checkbox', checked: chosen.has(token),
-            on: { change: (event) => {
-              if (event.target.checked) chosen.add(token);
-              else chosen.delete(token);
-              apply();
-            } },
-          }),
-          el('span', { text: token }),
-        ]));
+        const box = el('span', { class: 'tri-box' });
+        const paint = () => {
+          const value = state.get(token);
+          box.textContent = MARK[value] || '';
+          box.className = `tri-box ${value || ''}`;
+        };
+        paint();
+        menu.append(el('button', {
+          class: 'cat-option tri-option', type: 'button',
+          on: { click: () => {
+            const next = NEXT[state.get(token)];
+            if (next) state.set(token, next);
+            else state.delete(token);
+            paint();
+            apply();
+          } },
+        }, [box, el('span', { text: token })]));
       }
-      if (dropped) {
-        query.filters[column.key] = chosen.size ? { allowed: [...chosen] } : null;
-      }
+      if (dropped) query.filters[column.key] = spec();
       syncLabel();
     }
 
@@ -260,24 +292,36 @@ export function buildFeatureInfoView() {
 
   function updateCounts() {
     const shown = table ? table.rows.length : 0;
-    counts.textContent = query.include_filtered
-      ? `${shown.toLocaleString()} features (all)`
-      : `${shown.toLocaleString()} features passing all filters`;
+    counts.textContent = `${shown.toLocaleString()} features`;
   }
+
+  let loadToken = 0;
 
   async function load({ keepScroll = true } = {}) {
     const id = runId();
     if (!id) return;
+    const mine = ++loadToken;
+    if (!hitBar.childElementCount) buildHitBar();
     const scrollTop = keepScroll ? scroller.scrollTop : 0;
     try {
       // limit 0 == every row; this table is deliberately unpaged.
-      table = await api.features(id, { ...query, limit: 0 });
+      const response = await api.features(id, {
+        ...query, limit: 0,
+        hit_filter: hitFilterActive(query.hit_filter) ? query.hit_filter : null,
+      });
+      if (mine !== loadToken) return;
+      table = response;
     } catch (error) {
+      if (mine !== loadToken) return;
       clear(body).append(el('tr', {}, [el('td', { colSpan: 8 },
         [el('div', { class: 'notice error', text: error.message })])]));
       return;
     }
     rowIndex = new Map(table.rows.map((row, index) => [row[0], index]));
+    store.set({
+      hitFilter: table.hit_filter ? structuredClone(query.hit_filter) : null,
+      plotFilter: { ...store.get('plotFilter'), run: id, ids: new Set(rowIndex.keys()) },
+    });
     const columns = table.columns.map((column) => column.key).join('\u0000');
     if (columns !== headerColumns) buildHeader();
     else refreshHeader();
@@ -305,12 +349,162 @@ export function buildFeatureInfoView() {
       el('span', { class: 'muted', text: 'Show filtered-out features' }),
     ]));
 
+    if (table && table.has_fragments) {
+      toolbar.append(el('label', { class: 'check' }, [
+        el('input', {
+          type: 'checkbox', checked: query.ms2_only,
+          on: { change: (event) => {
+            query.ms2_only = event.target.checked;
+            load({ keepScroll: false });
+          } },
+        }),
+        el('span', { class: 'muted', text: 'MS/MS required' }),
+      ]));
+    }
+
+    toolbar.append(el('label', { class: 'check' }, [
+      el('input', {
+        type: 'checkbox', checked: store.get('plotFilter').active,
+        on: { change: (event) => {
+          store.set({ plotFilter: { ...store.get('plotFilter'), active: event.target.checked } });
+        } },
+      }),
+      el('span', { class: 'muted', text: 'Current selection only' }),
+    ]));
+
     toolbar.append(searchButton());
     toolbar.append(el('button', {
-      class: 'btn small', type: 'button', text: 'Clear filters',
-      on: { click: () => { query.filters = {}; load({ keepScroll: false }); } },
+      class: 'btn small', type: 'button', text: 'Clear',
+      on: { click: () => {
+        query.filters = {};
+        query.ms2_only = false;
+        query.hit_filter = emptyHitFilter();
+        buildHeader();
+        buildHitBar();
+        load({ keepScroll: false });
+      } },
     }));
   }
+
+  // --- hit filters ------------------------------------------------------
+  // A feature passes when one of its hits meets every hit criterion.
+
+  function buildHitBar() {
+    clear(hitBar);
+    const health = store.get('health') || {};
+    if (health.npatlas === false) { hitBar.classList.add('hidden'); return; }
+    hitBar.classList.remove('hidden');
+    const spec = query.hit_filter;
+    const chemistry = health.chemistry !== false;
+
+    const name = el('input', {
+      type: 'text', class: 'hit-name', placeholder: 'contains...', value: spec.name,
+      on: { input: (event) => { spec.name = event.target.value; reload(); } },
+    });
+    hitBar.append(el('label', {}, [el('span', { text: 'Hit name' }), name]));
+    hitBar.append(taxonFilter(spec));
+    if (chemistry) hitBar.append(substructureFilter(spec));
+    hitBar.append(activityFilter(spec, chemistry));
+  }
+
+  function taxonFilter(spec) {
+    const picker = taxonPicker({
+      level: spec.taxon.level, value: spec.taxon.value,
+      suggest: async (level, text) => (await api.taxa(runId(), level, text)).names,
+      onChange: (level, value) => {
+        spec.taxon = { level, value };
+        load({ keepScroll: false });
+      },
+    });
+    return el('div', { class: 'hit-field taxon-filter' }, [el('span', { text: 'Taxon' }), picker.node]);
+  }
+
+  function substructureFilter(spec) {
+    const label = el('span', { class: 'cat-label' });
+    const node = el('div', { class: 'cat-filter substructure-filter' });
+    const remove = el('button', {
+      class: 'cat-clear', type: 'button', text: '×',
+      on: { click: () => { spec.substructure = ''; sync(); load({ keepScroll: false }); } },
+    });
+    const sync = () => {
+      label.textContent = 'Draw';
+      button.title = spec.substructure;
+      node.classList.toggle('active', Boolean(spec.substructure));
+      remove.classList.toggle('hidden', !spec.substructure);
+    };
+    const button = el('button', {
+      class: 'cat-button', type: 'button',
+      on: { click: async () => {
+        const result = await openSketcher(runId(), spec.substructure);
+        if (result === null || result === spec.substructure) return;
+        spec.substructure = result;
+        sync();
+        load({ keepScroll: false });
+      } },
+    }, [label]);
+    node.append(button, remove);
+    sync();
+    return el('div', { class: 'hit-field' }, [el('span', { text: 'Substructure' }), node]);
+  }
+
+  function activityFilter(spec, chemistry) {
+    const options = chemistry
+      ? [['electrophile', 'Electrophile'], ['siderophore', 'Siderophore'],
+         ['chromophore', 'Chromophore']]
+      : [['siderophore', 'Siderophore']];
+    const label = el('span', { class: 'cat-label' });
+    const menu = el('div', { class: 'cat-menu hidden' });
+    const node = el('div', { class: 'cat-filter activity-filter' });
+    const sync = () => {
+      const names = options.filter(([key]) => spec.activity.includes(key)).map(([, text]) => text);
+      label.textContent = names.length ? names.join(', ') : 'Any';
+      node.classList.toggle('active', names.length > 0);
+    };
+    const button = el('button', {
+      class: 'cat-button', type: 'button',
+      on: { click: (event) => {
+        event.stopPropagation();
+        const show = menu.classList.contains('hidden');
+        for (const other of document.querySelectorAll('.cat-menu')) other.classList.add('hidden');
+        menu.classList.toggle('hidden', !show);
+      } },
+    }, [label, el('span', { class: 'cat-caret', text: '▾' })]);
+    document.addEventListener('click', (event) => {
+      if (!node.contains(event.target)) menu.classList.add('hidden');
+    });
+
+    for (const [key, text] of options) {
+      const row = el('label', { class: 'cat-option' }, [
+        el('input', {
+          type: 'checkbox', checked: spec.activity.includes(key),
+          on: { change: (event) => {
+            spec.activity = event.target.checked
+              ? [...spec.activity, key] : spec.activity.filter((item) => item !== key);
+            sync();
+            load({ keepScroll: false });
+          } },
+        }),
+        el('span', { text }),
+      ]);
+      if (key === 'chromophore') {
+        row.append(el('span', { class: 'muted', text: '≥' }), el('input', {
+          type: 'number', class: 'conj-min', min: 2, max: 200, step: 1,
+          value: spec.chromophore_min,
+          on: { change: (event) => {
+            const value = parseInt(event.target.value, 10);
+            if (Number.isNaN(value)) { event.target.value = spec.chromophore_min; return; }
+            spec.chromophore_min = value;
+            if (spec.activity.includes('chromophore')) load({ keepScroll: false });
+          } },
+        }), el('span', { class: 'muted', text: 'conjugated atoms' }));
+      }
+      menu.append(row);
+    }
+    node.append(button, menu);
+    sync();
+    return el('div', { class: 'hit-field' }, [el('span', { text: 'Activity' }), node]);
+  }
+
 
   function searchButton() {
     if ((store.get('health') || {}).npatlas === false) {
@@ -318,7 +512,7 @@ export function buildFeatureInfoView() {
     }
     const button = el('button', {
       class: 'btn small', type: 'button',
-      text: table && table.searched ? 'Re-search NPAtlas' : 'Search NPAtlas',
+      text: table && table.searched ? 'Re-search' : 'Search',
     });
     button.addEventListener('click', () => runSearch(button));
     return button;
@@ -327,7 +521,7 @@ export function buildFeatureInfoView() {
   async function runSearch(button) {
     if (button) {
       button.disabled = true;
-      button.textContent = 'Searching...';
+      button.textContent = 'Searching';
     }
     try {
       const result = await api.dbsearch(runId());
@@ -338,7 +532,7 @@ export function buildFeatureInfoView() {
       toast(error.message, 'error');
       if (button) {
         button.disabled = false;
-        button.textContent = 'Search NPAtlas';
+        button.textContent = 'Search';
       }
     }
   }

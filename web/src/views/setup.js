@@ -13,6 +13,7 @@ import { attachDino, dinoPressed } from './dino.js';
 import { api } from '../api.js';
 import { store } from '../state.js';
 import { collapsible } from '../components.js';
+import { taxonPicker } from './taxonpicker.js';
 import { $, bytes, checkbox, clear, debounce, el, field, numberInput, select, timeAgo, toast } from '../util.js';
 
 const SLOTS = [
@@ -32,6 +33,14 @@ let refreshAnalysis = () => {};
 let refreshRun = () => {};
 
 const settings = () => store.get('settings') || {};
+
+/** The database-search taxon, from the web field or the desktop's pair. */
+function savedTaxon(s) {
+  if (s.taxon) return { level: s.taxon_level || 'genus', value: s.taxon };
+  if (s.genus) return { level: 'genus', value: s.genus };
+  if (s.kingdom) return { level: 'kingdom', value: s.kingdom };
+  return { level: 'genus', value: '' };
+}
 
 function updateSetting(patch) {
   store.set({ settings: { ...settings(), ...patch } });
@@ -805,12 +814,15 @@ function analysisView() {
                     el('span', { class: 'hint', text: 'Natural Products Atlas, used in Feature Info' })]),
       el('div', { class: 'grid cols-3' }, [
         field('ppm threshold', numberInput(s.ppmthresh, (v) => updateSetting({ ppmthresh: v }))),
-        field('Kingdom', select([['', 'Any'], 'Bacterium', 'Fungus'], s.kingdom,
-                                (v) => updateSetting({ kingdom: v }))),
-        field('Genus', el('input', {
-          type: 'text', value: s.genus || '', placeholder: 'Any',
-          on: { change: (e) => updateSetting({ genus: e.target.value }) },
-        })),
+        field('Taxon', taxonPicker({
+          ...savedTaxon(s),
+          suggest: async (level, text) => (await api.taxaAll(level, text)).names,
+          onChange: (level, value) => updateSetting({
+            taxon_level: level, taxon: value,
+            kingdom: level === 'kingdom' ? value : '',
+            genus: level === 'genus' ? value : '',
+          }),
+        }).node),
       ]),
       (store.get('health') || {}).npatlas === false
         ? el('div', { class: 'notice warn',

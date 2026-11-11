@@ -551,6 +551,7 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
   padding: 14px 18px; }
 .table-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .table-pane > .plot-toolbar {
+  padding: 4px 10px; gap: 8px; font-size: 12px;
   background: var(--panel-2); color: var(--text);
   border: 1px solid var(--border); border-bottom: none;
   border-radius: var(--radius) var(--radius) 0 0;
@@ -560,7 +561,9 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .table-pane > .plot-toolbar .check,
 .table-pane > .plot-toolbar .check span { color: var(--muted); }
 .table-pane > .plot-toolbar input[type="checkbox"] { accent-color: var(--accent); }
-.table-pane > .plot-toolbar .btn { background: var(--control); color: var(--text); border-color: #565656; }
+.table-pane > .plot-toolbar .btn { background: var(--control); color: var(--text); border-color: #565656;
+  padding: 2px 8px; font-size: 12px; }
+.table-pane > .plot-toolbar .check { padding: 0; gap: 5px; }
 .table-pane > .plot-toolbar .btn:hover:not(:disabled) { background: var(--control-hover); }
 .table-scroll {
   flex: 1; min-height: 0; overflow: auto;
@@ -615,6 +618,13 @@ table.features th:nth-child(5), table.features td:nth-child(5) { width: 22%; }
 .cat-option:hover { background: var(--panel); }
 .cat-option input { accent-color: var(--accent); margin: 0; }
 .cat-empty { padding: 4px 6px; font-size: 12px; }
+.tri-option { width: 100%; background: none; border: none; color: var(--text); text-align: left; }
+.tri-box {
+  width: 14px; height: 14px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid #6a6a6a; border-radius: 2px; background: #1c1c1c; font-size: 11px; line-height: 1;
+}
+.tri-box.in { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tri-box.out { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 .kv.wide { grid-template-columns: max-content 1fr; column-gap: 20px; }
 
@@ -867,3 +877,61 @@ dialog.mapping:focus, dialog.mapping:focus-visible { outline: none; }
 .dino-menu button[aria-checked="true"]::before {
   content: "\2713"; position: absolute; left: 6px; color: var(--accent);
 }
+
+/* --- Feature Info hit filters ------------------------------------------ */
+.table-pane > .plot-toolbar.hit-filters {
+  border-radius: 0; border-top: 1px solid var(--border); gap: 12px; flex-wrap: wrap;
+}
+.hit-filters label, .hit-filters .hit-field {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+}
+.hit-filters input[type="text"], .hit-filters select {
+  background: #1c1c1c; color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 2px 6px; font-size: 12px;
+}
+.hit-filters input.hit-name { width: 130px; }
+.hit-filters input.hit-name:not(:placeholder-shown) { border-color: var(--accent); }
+.hit-filters .cat-filter { width: 130px; }
+.hit-filters .cat-button { font-size: 12px; padding: 2px 6px; }
+.hit-filters .activity-filter .cat-menu { min-width: 260px; }
+.hit-filters .cat-option input.conj-min { width: 52px; padding: 1px 4px; }
+.hit-filters .substructure-filter { display: flex; gap: 2px; width: auto; }
+.substructure-filter .cat-button { width: auto; }
+.cat-clear {
+  background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 14px;
+}
+.cat-clear:hover { color: var(--text); }
+.taxon-picker { display: flex; align-items: center; gap: 6px; }
+.taxon-picker select { width: auto; flex: none; }
+.taxon-picker .suggest { flex: 1; min-width: 0; }
+.field .taxon-picker .suggest input.taxon-input { width: 100%; }
+.suggest { position: relative; }
+.suggest input.taxon-input { width: 160px; }
+.suggest.active input.taxon-input { border-color: var(--accent); }
+.suggest-menu { min-width: 260px; }
+.suggest-option { justify-content: space-between; gap: 14px; }
+.suggest-option.active { background: var(--panel); }
+
+/* --- substructure sketcher --------------------------------------------- */
+dialog.sketcher {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 0; width: 676px;
+}
+dialog.sketcher::backdrop { background: rgba(0, 0, 0, .55); }
+dialog.sketcher:focus, dialog.sketcher:focus-visible { outline: none; }
+.sketcher .sk-head { padding: 12px 16px 6px; }
+.sketcher .sk-head h3 { margin: 0; font-family: var(--font-display); font-size: 15px; }
+.sketcher .sk-editor {
+  width: 640px; height: 380px; margin: 0 16px; background: #fff; border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center; color: #555;
+}
+.sketcher .sk-row { padding: 8px 16px 0; }
+.sketcher .sk-smiles { width: 100%; font-family: var(--mono); }
+.sketcher .sk-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px 14px; }
+.sketcher .sk-foot .spacer { flex: 1; }
+.sketcher .sk-error { color: var(--danger); font-size: 12px; }
+
+/* --- rail match tags --------------------------------------------------- */
+.match-caption .match-tags { color: var(--warn); margin-top: 2px; }
+.match-caption .match-tags:empty { display: none; }
+.match-row.filtered-out { opacity: .45; }

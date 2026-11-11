@@ -79,8 +79,16 @@ def build_params(run, settings, all_groups, input_paths):
     # --- NPAtlas filtering selectors (applied when the atlas is loaded for a
     # database search, not here -- the desktop filters its in-memory copy at
     # this point, but the web server loads the atlas per search request) --
-    params.kingdom = str(settings.kingdom or '')
-    params.genus = str(settings.genus or '')
+    level = str(settings.taxon_level or '').lower()
+    taxon = str(settings.taxon or '').strip()
+    if taxon:
+        params.kingdom = taxon if level == 'kingdom' else ''
+        params.genus = taxon if level == 'genus' else ''
+        params.taxon_level, params.taxon = level, taxon
+    else:
+        params.kingdom = str(settings.kingdom or '')
+        params.genus = str(settings.genus or '')
+        params.taxon_level, params.taxon = '', ''
 
     # --- graph-level filters, as a token list ----------------------------
     params.graphfilters = []

@@ -58,6 +58,11 @@ def _resolve():
         # than the reference volume, and is searched together with NPAtlas.
         'NPATLAS_SUPPLEMENTAL_PATH': _path('MPACT_NPATLAS_SUPPLEMENTAL_PATH',
                                            SERVER_ROOT / 'data' / 'npatlas_supplemental.tsv'),
+        # Hit-filter annotations, built by scripts/build_hit_annotations.py.
+        'TAXONOMY_PATH': _path('MPACT_TAXONOMY_PATH',
+                               SERVER_ROOT / 'data' / 'npatlas_taxonomy.tsv'),
+        'SIDERITE_KEYS_PATH': _path('MPACT_SIDERITE_KEYS_PATH',
+                                    SERVER_ROOT / 'data' / 'siderite_inchikeys.txt'),
 
         # The demo dataset ships *inside* the deployment, so it is resolved
         # separately from REFERENCE_DIR -- which in Docker is a mounted

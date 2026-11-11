@@ -44,6 +44,35 @@ function plotContext() {
   };
 }
 
+/** The Feature Info table's rows, when "Current selection only" is on
+ *  for the current run; otherwise null. */
+function tableIds() {
+  const filter = store.get('plotFilter');
+  return filter && filter.active && filter.ids && filter.run === runId() ? filter.ids : null;
+}
+
+/** A payload with every per-feature series cut down to `ids`. Cached on the
+ *  payload so a selection redraw reuses the same copy. */
+function restrictPayload(payload, ids) {
+  if (!ids || !Array.isArray(payload.series)) return payload;
+  if (payload._restricted && payload._restricted.ids === ids) return payload._restricted.payload;
+  const series = payload.series.map((entry) => {
+    if (!Array.isArray(entry.ids)) return entry;
+    const keep = entry.ids.map((id) => ids.has(id));
+    const out = { ...entry };
+    for (const [key, value] of Object.entries(entry)) {
+      if (Array.isArray(value) && value.length === entry.ids.length) {
+        out[key] = value.filter((_, i) => keep[i]);
+      }
+    }
+    out.count = out.ids.length;
+    return out;
+  });
+  const copy = { ...payload, series, _classified: undefined, _restricted: undefined };
+  payload._restricted = { ids, payload: copy };
+  return copy;
+}
+
 /**
  * Build a plot panel: a control bar, a plot surface, and the fetch/render
  * cycle connecting them.
@@ -79,8 +108,9 @@ function plotPanel(spec) {
   const redraw = () => {
     if (!payload) return;
     try {
-      const info = spec.render(surface, payload, plotContext(), state);
-      if (spec.footer) clear(footer).append(spec.footer(payload, state, info) || el('span'));
+      const shown = spec.featureLevel ? restrictPayload(payload, tableIds()) : payload;
+      const info = spec.render(surface, shown, plotContext(), state);
+      if (spec.footer) clear(footer).append(spec.footer(shown, state, info) || el('span'));
     } catch (error) {
       console.error(error);
       message(surface, `Could not draw this plot: ${error.message}`, 'error');
@@ -128,6 +158,7 @@ function plotPanel(spec) {
 
     clear(toolbar);
     const controls = spec.controls ? spec.controls(state, { fetchAndDraw, redraw }, payload) : [];
+    if (spec.featureLevel) controls.push(tableToggle());
     for (const item of controls) toolbar.append(item);
     toolbar.append(el('span', { class: 'spacer' }));
     toolbar.append(status);
@@ -141,6 +172,31 @@ function plotPanel(spec) {
       const restored = focusables()[focusedIndex];
       if (restored) restored.focus({ preventScroll: true });
     }
+  }
+
+  /** The plot-side switch for the Feature Info table restriction. Only shown
+   *  once the table has been loaded for this run. */
+  function tableToggle() {
+    const filter = store.get('plotFilter');
+    const node = el('label', { class: 'check' }, [
+      el('input', {
+        type: 'checkbox', checked: filter.active,
+        on: { change: (event) => {
+          store.set({ plotFilter: { ...store.get('plotFilter'), active: event.target.checked } });
+        } },
+      }),
+      el('span', { text: 'Current selection only' }),
+    ]);
+    node.classList.toggle('hidden', !filter.ids || filter.run !== runId());
+    return node;
+  }
+
+  if (spec.featureLevel) {
+    store.on('plotFilter', () => {
+      if (!node.isConnected || node.offsetParent === null) return;
+      buildToolbar();
+      redraw();
+    });
   }
 
   buildToolbar();
@@ -330,7 +386,7 @@ function dataReviewView() {
         id: 'quality', label: 'Feature plot',
         // No caption legend: the plot draws its own key inside the axes,
         // where matplotlib puts it.
-        build: () => plotPanel({ plot: 'quality', render: quality }),
+        build: () => plotPanel({ plot: 'quality', render: quality, featureLevel: true }),
       },
       {
         id: 'treemap', label: 'Tree map',
@@ -486,7 +542,7 @@ function scatterView({ id, label, plot, requires, render, extraControls }) {
     tabs: [{
       id, label,
       build: () => plotPanel({
-        plot, tall: true, initial: { guidelines: true },
+        plot, tall: true, initial: { guidelines: true }, featureLevel: true,
         options: (state) => ({ guidelines: state.guidelines }),
         controls: extraControls,
         render,
@@ -501,7 +557,7 @@ function volcanoView() {
     tabs: [{
       id: 'volcano', label: 'Volcano',
       build: () => plotPanel({
-        plot: 'volcano', tall: true,
+        plot: 'volcano', tall: true, featureLevel: true,
         initial: { pqthresh: 0.05, fcthresh: 1.5 },
         controls: (state, actions) => {
           // Threshold changes are re-classified client-side, so these redraw

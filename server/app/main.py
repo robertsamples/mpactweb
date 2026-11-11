@@ -114,15 +114,32 @@ def health():
     """Server capability report, used by the front end to hide what is
     unavailable (structure rendering, database search) instead of letting the
     user hit an error."""
-    from .core import structures_available
+    from .core import rdkit_available, structures_available
     from .plotdata.feature import atlas_available
     return {
         'status': 'ok',
         'npatlas': atlas_available(),
         'structures': structures_available,
+        'chemistry': rdkit_available,
         'max_upload_mb': config.MAX_UPLOAD_BYTES // (1024 * 1024),
         'max_concurrent_jobs': config.MAX_CONCURRENT_JOBS,
     }
+
+
+@app.get('/api/taxa')
+def taxa(level: str, q: str = ''):
+    """Taxon names in the whole atlas, for the setup form's suggestions."""
+    from fastapi import HTTPException
+
+    from .plotdata.hits import suggest_taxa
+    if len(level) > 16 or len(q) > 200:
+        raise HTTPException(status_code=422, detail='query too long')
+    try:
+        return {'level': level, 'names': suggest_taxa({}, level, q)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.exception_handler(Exception)

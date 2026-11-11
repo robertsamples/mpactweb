@@ -215,3 +215,21 @@ def test_unknown_settings_are_rejected():
     and running with the default."""
     with pytest.raises(Exception):
         AnalysisSettings(cvthreshold=0.3)
+
+
+@pytest.mark.parametrize('level, value, kingdom, genus', [
+    ('kingdom', 'Fungus', 'Fungus', ''),
+    ('genus', 'Streptomyces', '', 'Streptomyces'),
+    ('family', 'Streptomycetaceae', '', ''),
+])
+def test_taxon_fills_the_desktop_fields_where_it_can(tmp_path, inputs, level, value, kingdom, genus):
+    params, _ = build(tmp_path, inputs, taxon_level=level, taxon=value,
+                   kingdom='Bacterium', genus='Ignored')
+    assert (params.kingdom, params.genus) == (kingdom, genus)
+    assert (params.taxon_level, params.taxon) == (level, value)
+
+
+def test_without_a_taxon_the_desktop_fields_are_used(tmp_path, inputs):
+    params, _ = build(tmp_path, inputs, kingdom='Bacterium', genus='Streptomyces')
+    assert (params.kingdom, params.genus) == ('Bacterium', 'Streptomyces')
+    assert params.taxon == ''

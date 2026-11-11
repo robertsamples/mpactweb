@@ -148,8 +148,15 @@ export const api = {
     request(`/api/runs/${id}/feature/abundance?compound=${encodeURIComponent(compound)}`),
   spectrum: (id, compound) =>
     request(`/api/runs/${id}/feature/spectrum?compound=${encodeURIComponent(compound)}`),
-  matches: (id, compound) =>
-    request(`/api/runs/${id}/feature/matches?compound=${encodeURIComponent(compound)}`),
+  matches: (id, compound, filter) =>
+    request(`/api/runs/${id}/feature/matches?compound=${encodeURIComponent(compound)}`
+            + (filter ? `&filter=${encodeURIComponent(JSON.stringify(filter))}` : '')),
+  taxaAll: (level, q) =>
+    request(`/api/taxa?level=${encodeURIComponent(level)}&q=${encodeURIComponent(q)}`),
+  taxa: (id, level, q) =>
+    request(`/api/runs/${id}/taxa?level=${encodeURIComponent(level)}&q=${encodeURIComponent(q)}`),
+  checkSubstructure: (id, query) =>
+    request(`/api/runs/${id}/substructure/check?query=${encodeURIComponent(query)}`),
   dbsearch(id) {
     // Hit counts are part of a feature's fields, so the cache above is stale
     // the moment a search finishes.

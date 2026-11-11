@@ -100,6 +100,9 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       ['Click a point, cell or row to inspect a feature.']));
   };
 
+  let refreshMatches = null;
+  store.on('hitFilter', () => { if (refreshMatches) refreshMatches(); });
+
   const render = async () => {
     const compound = store.get('selectedFeature');
     const id = runId();
@@ -185,7 +188,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       if (loaded.has('matches')) return;
       loaded.add('matches');
       try {
-        const payload = await api.matches(id, compound);
+        const payload = await api.matches(id, compound, store.get('hitFilter'));
         if (mine !== token) return;
         matchesSection.setBody(matchesPanel(payload, id));
       } catch (error) {
@@ -193,6 +196,12 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         if (mine !== token) return;
         matchesSection.setBody(el('div', { class: 'notice warn', text: error.message }));
       }
+    };
+
+    refreshMatches = () => {
+      if (mine !== token) return;
+      loaded.delete('matches');
+      if (matchesSection.isOpen()) loadMatches();
     };
 
     const identitySection = section('identity', 'Details', null, identityBody, loadIdentity);
@@ -259,7 +268,8 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         [`No match within ${payload.ppm_threshold} ppm of m/z ${num(payload.mz, 4)}.`]);
     }
 
-    let index = 0;
+    const filtered = payload.matches.some((match) => match.passes !== undefined);
+    let index = filtered ? Math.max(0, payload.matches.findIndex((match) => match.passes)) : 0;
     const structure = el('div', { class: 'structure' });
     const caption = el('div', { class: 'match-caption' });
     const position = el('span', { class: 'muted' });
@@ -268,7 +278,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     const list = el('div', { class: 'match-list', tabIndex: 0 });
 
     const rows = payload.matches.map((match, i) => el('button', {
-      class: 'match-row', type: 'button',
+      class: `match-row ${filtered && !match.passes ? 'filtered-out' : ''}`, type: 'button',
       on: { click: () => show(i) },
     }, [
       el('span', { class: 'match-name', text: match.compound_name || '(unnamed)' }),
@@ -298,6 +308,11 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         el('div', { class: 'muted', text: [
           `${match.genus || ''} ${match.origin_species || ''}`.trim(),
           match.source_database && match.source_database !== 'NPAtlas' ? match.source_database : '',
+        ].filter(Boolean).join('  ·  ') }),
+        el('div', { class: 'match-tags', text: [
+          ...(match.warheads || []),
+          match.siderophore ? 'Siderophore' : '',
+          match.conjugated ? `${match.conjugated} conjugated atoms` : '',
         ].filter(Boolean).join('  ·  ') }));
 
       clear(structure);
@@ -329,7 +344,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     ]);
 
     const panel = el('div', { class: 'matches-panel' }, [nav, structure, caption, list]);
-    show(0);
+    show(index);
     return panel;
   }
 

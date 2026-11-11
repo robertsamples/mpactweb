@@ -27,7 +27,7 @@ pip install -r server/requirements.txt
 # Optional: the Natural Products Atlas table (~33MB) for database matching.
 python scripts/fetch_reference_data.py
 
-# Optional: vendor Plotly locally for an air-gapped deployment.
+# Optional: vendor Plotly and JSME locally for an air-gapped deployment.
 python scripts/fetch_web_vendor.py
 
 cd server && uvicorn app.main:app --reload
@@ -182,6 +182,8 @@ All optional; every value has a working default.
 | `MPACT_DATA_ROOT` | `server/var` | Sessions, uploads and run outputs |
 | `MPACT_NPATLAS_PATH` | `server/data/npatlas.tsv` | NPAtlas table |
 | `MPACT_NPATLAS_SUPPLEMENTAL_PATH` | `server/data/npatlas_supplemental.tsv` | Compounds NPAtlas lacks (SIDERITE, lab compound list), searched together with NPAtlas |
+| `MPACT_TAXONOMY_PATH` | `server/data/npatlas_taxonomy.tsv` | Genus lineage (NCBI) for the Feature Info taxon filter; rebuild with `scripts/build_hit_annotations.py --taxdump` |
+| `MPACT_SIDERITE_KEYS_PATH` | `server/data/siderite_inchikeys.txt` | SIDERITE structures for the siderophore filter; rebuild with `scripts/build_hit_annotations.py --siderite` |
 | `MPACT_MAX_CONCURRENT_JOBS` | `2` | Analyses running at once |
 | `MPACT_JOB_TIMEOUT_SECONDS` | `3600` | Per-run time limit |
 | `MPACT_MAX_UPLOAD_BYTES` | `536870912` | Upload ceiling (512MB) |

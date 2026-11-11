@@ -200,6 +200,8 @@ def settings_from(params, warnings):
         'ppmthresh': _number(params, 'ppmthresh', 10.0),
         'kingdom': str(getattr(params, 'kingdom', '') or ''),
         'genus': str(getattr(params, 'genus', '') or ''),
+        'taxon_level': str(getattr(params, 'taxon_level', '') or ''),
+        'taxon': str(getattr(params, 'taxon', '') or ''),
 
         'groupsets': groupsets_from(params, warnings),
     }

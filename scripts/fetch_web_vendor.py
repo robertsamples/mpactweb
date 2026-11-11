@@ -14,9 +14,12 @@ Usage::
 
 import argparse
 import hashlib
+import io
 import os
+import shutil
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -28,6 +31,10 @@ VENDOR_DIR = REPO_ROOT / 'web' / 'vendor'
 DEFAULT_VERSION = '4.0.0'
 URL_TEMPLATE = 'https://cdnjs.cloudflare.com/ajax/libs/plotly.js/{version}/plotly.min.js'
 MIN_EXPECTED_BYTES = 1_000_000   # a real plotly bundle is several MB
+
+# JSME molecule editor (BSD), used by the Feature Info substructure filter.
+# Keep in step with the fallback in web/src/views/sketcher.js.
+JSME_URL = 'https://jsme-editor.github.io/downloads/JSME_2024-04-29.zip'
 
 
 def download(url, destination, timeout=180):
@@ -74,8 +81,44 @@ def main():
 
     print(f'Done: {destination} ({written / (1024 * 1024):.1f} MB)')
     print(f'sha256: {digest}')
-    print('The page prefers this local copy automatically; no config change needed.')
+
+    print(f'Downloading {JSME_URL}')
+    try:
+        fetch_jsme(VENDOR_DIR / 'jsme')
+    except Exception as exc:  # noqa: BLE001
+        print(f'error: {type(exc).__name__}: {exc}', file=sys.stderr)
+        return 1
+    print(f'Done: {VENDOR_DIR / "jsme"}')
+    print('The page prefers these local copies automatically; no config change needed.')
     return 0
+
+
+def fetch_jsme(destination, timeout=180):
+    """Unpack the distribution's ``jsme/`` directory and its licence."""
+    with urllib.request.urlopen(JSME_URL, timeout=timeout) as response:
+        archive = zipfile.ZipFile(io.BytesIO(response.read()))
+    staging = destination.with_name(destination.name + '.part')
+    shutil.rmtree(staging, ignore_errors=True)
+    found = False
+    for member in archive.infolist():
+        parts = Path(member.filename).parts
+        if len(parts) < 2 or member.is_dir():
+            continue
+        if parts[1] == 'license.txt':
+            relative = Path('license.txt')
+        elif parts[1] == 'jsme' and len(parts) > 2:
+            relative = Path(*parts[2:])
+            found = found or relative.name == 'jsme.nocache.js'
+        else:
+            continue
+        target = staging / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(archive.read(member))
+    if not found:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError('jsme.nocache.js not found in the archive')
+    shutil.rmtree(destination, ignore_errors=True)
+    os.replace(staging, destination)
 
 
 if __name__ == '__main__':

@@ -8,6 +8,7 @@ server/var/
 server/data/*.tsv
 # ...except the supplemental table, which is curated here and ships with the code.
 !server/data/npatlas_supplemental.tsv
+!server/data/npatlas_taxonomy.tsv
 server/data/*.db
 
 # --- vendored browser libraries -----------------------------------------
@@ -15,6 +16,7 @@ server/data/*.db
 # local copy here for offline/air-gapped deployments.
 web/vendor/*.js
 web/vendor/*.map
+web/vendor/jsme/
 
 # --- python --------------------------------------------------------------
 __pycache__/
