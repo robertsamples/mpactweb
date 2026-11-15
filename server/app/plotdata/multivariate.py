@@ -16,7 +16,7 @@ render as an SVG ellipse.
 import numpy as np
 
 from ..core import ordination
-from ..results import ORDINATION_LOCK
+from ..results import ORDINATION_LOCK, derived, file_key
 from . import labels as labelutil
 
 METHODS = ('PCA', 'NMDS', 'PLS-DA')
@@ -88,19 +88,46 @@ def ordination_plot(results, options=None):
         raise ValueError(f'replicates must be one of {", ".join(REPLICATE_VIEWS)}')
     collapse = replicates == labelutil.BIOLOGICAL
 
+    if method not in METHODS:
+        raise ValueError(f'unknown ordination method {method!r}')
+
     filtered_path = results.require(results.filtered_path)
     raw_header = results.raw_header()
-    with ORDINATION_LOCK:
-        x, biolgroup = ordination.load_ordination_matrix(
-            filtered_path, raw_header.copy(), collapse_replicates=collapse)
 
-    if len(x) < 3:
-        raise ValueError(
-            f'ordination needs at least three points; "{replicates}" gives {len(x)}. '
-            f'Try "{labelutil.INJECTIONS}".')
-    # Same component count the desktop uses: as many as the data supports, to
-    # a maximum of 10.
-    n_components = max(2, min(len(x) - 1, 10))
+    # The fit depends only on the method and how replicates are grouped. The
+    # view, the selected feature and the number of loadings shown are all
+    # read off the same solution, so it is solved once and kept: without
+    # this, switching Scores <-> Loadings or selecting a different feature
+    # re-ran the whole NMDS (the slowest thing any plot tab does).
+    def solve():
+        with ORDINATION_LOCK:
+            x, biolgroup = ordination.load_ordination_matrix(
+                filtered_path, raw_header.copy(), collapse_replicates=collapse)
+        if len(x) < 3:
+            raise ValueError(
+                f'ordination needs at least three points; "{replicates}" gives {len(x)}. '
+                f'Try "{labelutil.INJECTIONS}".')
+        # Same component count the desktop uses: as many as the data
+        # supports, to a maximum of 10.
+        n_components = max(2, min(len(x) - 1, 10))
+        title = ''
+        if method == 'PCA':
+            scores, loadings, expvar = ordination.run_pca(x, n_components)
+            axis_labels = [f'PC{i + 1} ({100 * expvar[i]:.1f}%)' for i in range(2)]
+        elif method == 'PLS-DA':
+            scores, loadings, expvar = ordination.run_plsda(x, biolgroup, n_components)
+            axis_labels = [f'PLS{i + 1} ({100 * expvar[i]:.1f}%)' for i in range(2)]
+        else:
+            scores, expvar, stress = ordination.run_nmds(x, n_components)
+            loadings = ordination.nmds_loading_proxy(x, scores)
+            axis_labels = ['NMDS1', 'NMDS2']
+            title = f'Stress: {stress:.4f}'
+        return (len(x), biolgroup, n_components, scores, loadings,
+                np.asarray(expvar, dtype=float), axis_labels, title)
+
+    (n_points, biolgroup, n_components, scores, loadings, expvar,
+     axis_labels, title) = derived(
+        ('ordination', method, collapse) + file_key(filtered_path), solve)
 
     blank_group = results.blank_group()
     # Colour assignment skips the blank group, as the desktop does -- blanks
@@ -111,21 +138,6 @@ def ordination_plot(results, options=None):
             group_colours[value] = GROUP_COLORS[position % len(GROUP_COLORS)]
             position += 1
 
-    title = ''
-    if method == 'PCA':
-        scores, loadings, expvar = ordination.run_pca(x, n_components)
-        axis_labels = [f'PC{i + 1} ({100 * expvar[i]:.1f}%)' for i in range(2)]
-    elif method == 'PLS-DA':
-        scores, loadings, expvar = ordination.run_plsda(x, biolgroup, n_components)
-        axis_labels = [f'PLS{i + 1} ({100 * expvar[i]:.1f}%)' for i in range(2)]
-    elif method == 'NMDS':
-        scores, expvar, stress = ordination.run_nmds(x, n_components)
-        loadings = ordination.nmds_loading_proxy(x, scores)
-        axis_labels = ['NMDS1', 'NMDS2']
-        title = f'Stress: {stress:.4f}'
-    else:
-        raise ValueError(f'unknown ordination method {method!r}')
-
     payload = {
         'plot': 'ordination',
         'method': method,
@@ -134,13 +146,13 @@ def ordination_plot(results, options=None):
         'views': list(VIEWS),
         'replicates': replicates,
         'replicate_views': list(REPLICATE_VIEWS),
-        'n_points': int(len(x)),
+        'n_points': int(n_points),
         'point_noun': 'samples' if collapse else 'injections',
         'n_components': int(n_components),
         'x_label': axis_labels[0],
         'y_label': axis_labels[1],
         'title': title,
-        'explained_variance': [float(v) for v in np.asarray(expvar, dtype=float)],
+        'explained_variance': [float(v) for v in expvar],
     }
 
     if view == 'Loadings':

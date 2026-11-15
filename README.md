@@ -187,7 +187,10 @@ All optional; every value has a working default.
 | `MPACT_MAX_CONCURRENT_JOBS` | `2` | Analyses running at once |
 | `MPACT_JOB_TIMEOUT_SECONDS` | `3600` | Per-run time limit |
 | `MPACT_MAX_UPLOAD_BYTES` | `536870912` | Upload ceiling (512MB) |
-| `MPACT_SESSION_MAX_AGE_SECONDS` | `2592000` | Sessions pruned at startup (30 days) |
+| `MPACT_SESSION_MAX_AGE_SECONDS` | `2592000` | Sessions pruned at startup and daily (30 days) |
+| `MPACT_CSV_CACHE_MB` | `256` | Memory for parsed output tables (least recently used are dropped) |
+| `MPACT_PLOT_CACHE_MB` | `64` | Memory for finished plot payloads, so reopening a tab does not recompute it |
+| `MPACT_FRAGDB_CACHE_ENTRIES` | `6` | Parsed fragment databases kept in memory, one per recently viewed run |
 | `MPACT_SESSION_COOKIE_SECURE` | `false` | Turn on behind HTTPS |
 | `MPACT_AUTH` | `none` | `none`, `code` or `users` (see below) |
 | `MPACT_ACCESS_CODE` | | The shared code(s), comma-separated, when `MPACT_AUTH=code` (not case-sensitive) |

@@ -4,6 +4,7 @@ import shutil
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from .. import config, jobs, storage
@@ -31,11 +32,16 @@ def list_runs(session: storage.Session = Depends(get_session)):
             'state': status.get('state'),
             'stage': status.get('stage', ''),
             'label': request.get('label'),
-            'created_at': run.created_at,
+            # The time recorded when the run was submitted. The directory's
+            # ctime, used before, is its creation time only on Windows; on
+            # Linux it moves every time a file in it is replaced, so runs
+            # were dated (and ordered) by when their status last changed.
+            'created_at': request.get('created_at') or run.created_at,
             'started_at': status.get('started_at'),
             'finished_at': status.get('finished_at'),
             'peaktable': (request.get('inputs') or {}).get('peaktable_name'),
         })
+    out.sort(key=lambda item: item['created_at'] or 0, reverse=True)
     return out
 
 
@@ -72,24 +78,38 @@ async def create_run(payload: RunRequest, session: storage.Session = Depends(get
 
     run = session.new_run()
     copied = {}
-    for kind, record in (('peaktable', peaktable), ('samplelist', samplelist),
-                         ('metadata', metadata), ('fragments', fragments)):
-        if record is None:
-            continue
-        destination = run.rawdata / record.name
-        shutil.copy2(session.path_for(record), destination)
-        copied[f'{kind}_name'] = record.name
+    try:
+        for kind, record in (('peaktable', peaktable), ('samplelist', samplelist),
+                             ('metadata', metadata), ('fragments', fragments)):
+            if record is None:
+                continue
+            destination = run.rawdata / record.name
+            # In a worker thread: a peak table can be hundreds of megabytes,
+            # and copying it on the event loop froze every other request.
+            await run_in_threadpool(shutil.copy2, session.path_for(record), destination)
+            copied[f'{kind}_name'] = record.name
 
-    request = payload.model_dump()
-    request['inputs'].update(copied)
-    request['created_at'] = time.time()
-    run.write_request(request)
+        request = payload.model_dump()
+        request['inputs'].update(copied)
+        request['created_at'] = time.time()
+        run.write_request(request)
+    except OSError as exc:
+        # A library file deleted from another tab, or a full disk. Without
+        # this the half-made run stayed in the list with no status at all.
+        shutil.rmtree(run.root, ignore_errors=True)
+        raise HTTPException(
+            status_code=409,
+            detail=f'could not prepare the run ({exc.strerror or exc}); '
+                   'check the selected files are still in the library') from exc
 
     try:
         await jobs.manager.submit(session, run)
     except jobs.AlreadyActive as exc:
         shutil.rmtree(run.root, ignore_errors=True)
         return _already_active(exc.run_id)
+    except Exception:
+        shutil.rmtree(run.root, ignore_errors=True)
+        raise
     return {'run_id': run.id, 'state': 'queued'}
 
 
@@ -153,7 +173,7 @@ async def cancel_run(run=Depends(get_run), session: storage.Session = Depends(ge
 async def delete_run(run=Depends(get_run), session: storage.Session = Depends(get_session)):
     """Cancel if needed, then remove the run and everything it produced."""
     await jobs.manager.cancel(session, run)
-    shutil.rmtree(run.root, ignore_errors=True)
+    await run_in_threadpool(shutil.rmtree, run.root, True)
     return {'deleted': run.id}
 
 

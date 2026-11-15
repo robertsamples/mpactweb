@@ -136,9 +136,18 @@ def secret_key() -> bytes:
     if configured:
         return configured.encode('utf-8')
 
+    # Every authenticated request verifies its cookie, so the key is read
+    # from disk once per data root rather than once per request.
     path = Path(config.DATA_ROOT) / 'secret.key'
+    cached = _SECRET_KEYS.get(str(path))
+    if cached:
+        return cached
+
     if path.is_file():
-        return path.read_bytes().strip()
+        key = path.read_bytes().strip()
+        if key:
+            _SECRET_KEYS[str(path)] = key
+            return key
 
     # Hex text, not raw bytes: the read above strips whitespace, and a raw
     # key that happened to start or end with a whitespace byte (about 1 in 20)
@@ -150,7 +159,16 @@ def secret_key() -> bytes:
         os.chmod(path, 0o600)
     except OSError:      # pragma: no cover
         pass
+    _SECRET_KEYS[str(path)] = key
     return key
+
+
+_SECRET_KEYS = {}
+
+
+def forget_secret_key():
+    """Drop the cached signing key, so the next request reads it again."""
+    _SECRET_KEYS.clear()
 
 
 # --- tokens -----------------------------------------------------------------

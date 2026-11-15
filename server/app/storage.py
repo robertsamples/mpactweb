@@ -49,6 +49,59 @@ def new_id(prefix=''):
     return prefix + secrets.token_hex(8)
 
 
+def atomic_replace(source, target, patience=3.0):
+    """``os.replace`` that waits out a reader.
+
+    On Windows a rename over a file someone has open fails outright, and the
+    status file is read by the server while the analysis process rewrites it,
+    so a poll landing at the wrong moment would otherwise fail the write (and
+    with it the run). Readers hold the file for microseconds, so this retries
+    quickly and often, for up to ``patience`` seconds. POSIX never takes the
+    retry.
+    """
+    deadline = time.monotonic() + patience
+    pause = 0.001
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(pause)
+            pause = min(pause * 1.5, 0.02)
+
+
+def write_text_atomic(path, text, encoding='utf-8'):
+    """Write beside ``path`` and rename over it, so a reader sees the old
+    file or the new one and never part of either. The scratch name is unique
+    per writer: the server and an analysis process both write a run's status."""
+    path = Path(path)
+    scratch = path.with_name(f'{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp')
+    try:
+        scratch.write_text(text, encoding=encoding)
+        atomic_replace(scratch, path)
+    finally:
+        try:
+            scratch.unlink()
+        except OSError:
+            pass
+
+
+def read_json(path, default=None, attempts=4):
+    """Parse a JSON file that another process may be replacing right now."""
+    for attempt in range(attempts):
+        try:
+            return json.loads(Path(path).read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return default
+        except (OSError, json.JSONDecodeError):
+            if attempt == attempts - 1:
+                return default
+            time.sleep(0.01 * (attempt + 1))
+    return default
+
+
 def safe_filename(name, fallback='upload.csv'):
     """Reduce a client-supplied filename to something safe to place on disk.
 
@@ -154,9 +207,8 @@ class Session:
 
     def _write_index(self, records):
         payload = [asdict(r) if isinstance(r, FileRecord) else r for r in records]
-        tmp = self.index_path.with_suffix(f'.json.{secrets.token_hex(4)}.tmp')
-        tmp.write_text(json.dumps(payload, indent=2))
-        tmp.replace(self.index_path)   # atomic: a crash mid-write can't truncate the index
+        # Atomic: a crash mid-write can't truncate the index.
+        write_text_atomic(self.index_path, json.dumps(payload, indent=2))
 
     def files(self):
         # Under the lock too: on Windows an open reader makes the writer's
@@ -261,24 +313,18 @@ class Run:
     # --- request / status -------------------------------------------------
 
     def write_request(self, payload):
-        self.request_path.write_text(json.dumps(payload, indent=2, default=str))
+        # The analysis process rewrites this (it records the converted peak
+        # table's name) while result requests are reading it.
+        write_text_atomic(self.request_path, json.dumps(payload, indent=2, default=str))
 
     def read_request(self):
-        try:
-            return json.loads(self.request_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
+        return read_json(self.request_path)
 
     def write_status(self, status):
-        tmp = self.status_path.with_suffix('.json.tmp')
-        tmp.write_text(json.dumps(status, indent=2, default=str))
-        tmp.replace(self.status_path)
+        write_text_atomic(self.status_path, json.dumps(status, indent=2, default=str))
 
     def read_status(self):
-        try:
-            return json.loads(self.status_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
+        return read_json(self.status_path)
 
     def append_log(self, text):
         with self.log_path.open('a', encoding='utf-8', errors='replace') as handle:

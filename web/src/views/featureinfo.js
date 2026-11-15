@@ -39,6 +39,28 @@ const emptyHitFilter = () => ({
 const hitFilterActive = (spec) => Boolean(spec.name.trim() || spec.taxon.value.trim()
   || spec.substructure || spec.activity.length);
 
+/* Whether the filter panel was left open. Read through a guard: with storage
+ * blocked (some privacy modes throw on any access) a bare read here stopped
+ * the whole view from being built. */
+const FILTERS_KEY = 'mpact.features.filters';
+function filtersWereOpen() {
+  try { return localStorage.getItem(FILTERS_KEY) !== 'closed'; } catch { return true; }
+}
+function rememberFilters(open) {
+  try { localStorage.setItem(FILTERS_KEY, open ? 'open' : 'closed'); } catch { /* this visit only */ }
+}
+
+/* One listener closes whichever popup is open when a click lands outside it.
+ * Each popup used to add its own to the document, and the header and hit bar
+ * are rebuilt (on Clear, on a new run), so they accumulated. */
+document.addEventListener('click', (event) => {
+  for (const menu of document.querySelectorAll('.features-view .cat-menu:not(.hidden)')) {
+    if (!menu.parentElement || !menu.parentElement.contains(event.target)) {
+      menu.classList.add('hidden');
+    }
+  }
+});
+
 export function buildFeatureInfoView() {
   const node = el('div', { class: 'plot-view features-view' });
 
@@ -48,7 +70,12 @@ export function buildFeatureInfoView() {
                   ms2_only: false, hit_filter: emptyHitFilter() };
   let table = null;             // last response
   let rowIndex = new Map();     // compound -> row position, for keyboard nav
-  let autoSearched = false;     // the one-off NPAtlas search has been attempted
+  let loadedRun = null;         // the run `table` belongs to
+  let lastScroll = 0;           // where the list was when the view was last on screen
+  // Runs whose one-off NPAtlas search has been attempted. Per run: this was
+  // a single flag, so after the first run's automatic search no later run
+  // ever got one and its Hits column stayed blank.
+  const autoSearched = new Set();
 
   // --- table shell ------------------------------------------------------
   const headRow = el('tr');
@@ -62,8 +89,13 @@ export function buildFeatureInfoView() {
   const counts = el('span', { class: 'status' });
 
   const toolbar = el('div', { class: 'plot-toolbar' });
-  const hitBar = el('div', { class: 'plot-toolbar hit-filters' });
-  const tablePane = el('div', { class: 'table-pane' }, [toolbar, hitBar, scroller]);
+  const hitBar = el('div', { class: 'hit-row' });
+  const searchRow = el('div', { class: 'hit-row search-row' });
+  const filterPanel = el('div', { class: 'plot-toolbar hit-filters' }, [hitBar, searchRow]);
+  const tablePane = el('div', { class: 'table-pane' }, [toolbar, filterPanel, scroller]);
+  const msmsOptions = { min_score: 0.5, match_precursor: true };
+  let filtersOpen = filtersWereOpen();
+  filterPanel.classList.toggle('hidden', !filtersOpen);
 
   // The details rail is the app's own right-hand panel, shared with every
   // plot view, so a feature looks the same wherever it is inspected and
@@ -204,10 +236,7 @@ export function buildFeatureInfoView() {
       menu.classList.toggle('hidden', !show);
     }
 
-    // A click anywhere else closes it, the way a menu should behave.
-    document.addEventListener('click', (event) => {
-      if (!node.contains(event.target)) toggle(false);
-    });
+    // (A click anywhere else closes it: the module's one document listener.)
 
     function refresh(categories) {
       const key = categories.join('\u0000');
@@ -311,15 +340,22 @@ export function buildFeatureInfoView() {
       });
       if (mine !== loadToken) return;
       table = response;
+      loadedRun = id;
     } catch (error) {
       if (mine !== loadToken) return;
+      loadedRun = null;
       clear(body).append(el('tr', {}, [el('td', { colSpan: 8 },
         [el('div', { class: 'notice error', text: error.message })])]));
       return;
     }
     rowIndex = new Map(table.rows.map((row, index) => [row[0], index]));
+    // The same filter as last time stays the same object: the details rail
+    // re-requests a feature's matches whenever this changes, and a fresh
+    // copy on every reload made it do so for each sort click and keystroke.
+    const hitFilter = table.hit_filter ? structuredClone(query.hit_filter) : null;
+    const previous = store.get('hitFilter');
     store.set({
-      hitFilter: table.hit_filter ? structuredClone(query.hit_filter) : null,
+      hitFilter: JSON.stringify(previous) === JSON.stringify(hitFilter) ? previous : hitFilter,
       plotFilter: { ...store.get('plotFilter'), run: id, ids: new Set(rowIndex.keys()) },
     });
     const columns = table.columns.map((column) => column.key).join('\u0000');
@@ -372,17 +408,60 @@ export function buildFeatureInfoView() {
       el('span', { class: 'muted', text: 'Current selection only' }),
     ]));
 
-    toolbar.append(searchButton());
     toolbar.append(el('button', {
-      class: 'btn small', type: 'button', text: 'Clear',
-      on: { click: () => {
-        query.filters = {};
-        query.ms2_only = false;
-        query.hit_filter = emptyHitFilter();
-        buildHeader();
-        buildHitBar();
-        load({ keepScroll: false });
+      class: 'collapse-toggle', type: 'button', text: filtersOpen ? '▾' : '▸',
+      on: { click: (event) => {
+        filtersOpen = !filtersOpen;
+        rememberFilters(filtersOpen);
+        filterPanel.classList.toggle('hidden', !filtersOpen);
+        event.currentTarget.textContent = filtersOpen ? '▾' : '▸';
       } },
+    }));
+    buildSearchRow();
+  }
+
+  function clearFilters() {
+    query.filters = {};
+    query.ms2_only = false;
+    query.hit_filter = emptyHitFilter();
+    buildHeader();
+    buildHitBar();
+    load({ keepScroll: false });
+  }
+
+  function buildSearchRow() {
+    clear(searchRow);
+    const health = store.get('health') || {};
+    if (health.npatlas !== false) searchRow.append(searchButton());
+    if (health.msms && table && table.has_fragments) {
+      const button = el('button', {
+        class: 'btn small', type: 'button',
+        text: table.msms_searched ? 'Re-search MS/MS' : 'Search MS/MS',
+        on: { click: () => runMsmsSearch(button) },
+      });
+      searchRow.append(
+        button,
+        el('label', {}, [el('span', { text: 'Cosine ≥' }), el('input', {
+          type: 'number', class: 'cosine-min', min: 0.05, max: 1, step: 0.05,
+          value: msmsOptions.min_score,
+          on: { change: (event) => {
+            const value = parseFloat(event.target.value);
+            if (Number.isNaN(value) || value <= 0 || value > 1) {
+              event.target.value = msmsOptions.min_score;
+              return;
+            }
+            msmsOptions.min_score = value;
+          } },
+        })]),
+        el('label', { class: 'check' }, [
+          el('input', { type: 'checkbox', checked: msmsOptions.match_precursor,
+                        on: { change: (event) => { msmsOptions.match_precursor = event.target.checked; } } }),
+          el('span', { text: 'Match precursor' }),
+        ]),
+      );
+    }
+    searchRow.append(el('span', { class: 'spacer' }), el('button', {
+      class: 'btn small', type: 'button', text: 'Clear', on: { click: clearFilters },
     }));
   }
 
@@ -392,9 +471,8 @@ export function buildFeatureInfoView() {
   function buildHitBar() {
     clear(hitBar);
     const health = store.get('health') || {};
-    if (health.npatlas === false) { hitBar.classList.add('hidden'); return; }
-    hitBar.classList.remove('hidden');
     const spec = query.hit_filter;
+    if (health.npatlas === false) return;
     const chemistry = health.chemistry !== false;
 
     const name = el('input', {
@@ -469,9 +547,6 @@ export function buildFeatureInfoView() {
         menu.classList.toggle('hidden', !show);
       } },
     }, [label, el('span', { class: 'cat-caret', text: '▾' })]);
-    document.addEventListener('click', (event) => {
-      if (!node.contains(event.target)) menu.classList.add('hidden');
-    });
 
     for (const [key, text] of options) {
       const row = el('label', { class: 'cat-option' }, [
@@ -512,28 +587,40 @@ export function buildFeatureInfoView() {
     }
     const button = el('button', {
       class: 'btn small', type: 'button',
-      text: table && table.searched ? 'Re-search' : 'Search',
+      text: table && table.searched ? 'Re-search MS1' : 'Search MS1',
     });
     button.addEventListener('click', () => runSearch(button));
     return button;
   }
 
   async function runSearch(button) {
-    if (button) {
-      button.disabled = true;
-      button.textContent = 'Searching';
-    }
+    if (button) button.disabled = true;
+    store.set({ busy: 'Searching MS1' });
     try {
       const result = await api.dbsearch(runId());
-      toast(`${result.matched} of ${result.searched} features matched within `
-            + `${result.ppm_threshold} ppm`, 'ok');
+      toast(`MS1: ${result.matched} of ${result.searched} features matched`, 'ok');
       await load({ keepScroll: true });
     } catch (error) {
       toast(error.message, 'error');
-      if (button) {
-        button.disabled = false;
-        button.textContent = 'Search';
-      }
+      if (button) button.disabled = false;
+    } finally {
+      store.set({ busy: null });
+    }
+  }
+
+  async function runMsmsSearch(button) {
+    button.disabled = true;
+    store.set({ busy: 'Searching MS/MS' });
+    try {
+      const result = await api.msmsSearch(runId(), msmsOptions);
+      toast(`MS/MS: ${result.matched} of ${result.searched} features matched`, 'ok');
+      store.set({ msmsVersion: (store.get('msmsVersion') || 0) + 1 });
+      await load({ keepScroll: true });
+    } catch (error) {
+      toast(error.message, 'error');
+      button.disabled = false;
+    } finally {
+      store.set({ busy: null });
     }
   }
 
@@ -544,11 +631,17 @@ export function buildFeatureInfoView() {
    *  here removes the state where a feature's detail panel lists matches
    *  while the table's Hits column still reads "--". */
   async function autoSearch() {
-    if (autoSearched || !table || table.searched) return;
+    const id = runId();
+    if (!id || loadedRun !== id || !table || table.searched || autoSearched.has(id)) return;
     if ((store.get('health') || {}).npatlas === false) return;
-    autoSearched = true;
-    counts.textContent = 'Searching the Natural Products Atlas...';
+    autoSearched.add(id);
     await runSearch(null);
+  }
+
+  /** Bring the selected feature's row into view, if it is in the list. */
+  function revealSelection() {
+    const selected = store.get('selectedFeature');
+    if (selected && rowIndex.has(selected)) scrollRowIntoView(rowIndex.get(selected));
   }
 
   // --- keyboard navigation ---------------------------------------------
@@ -579,14 +672,17 @@ export function buildFeatureInfoView() {
     renderWindow();
   }
 
-  scroller.addEventListener('scroll', () => renderWindow(), { passive: true });
+  scroller.addEventListener('scroll', () => {
+    if (node.classList.contains('active')) lastScroll = scroller.scrollTop;
+    renderWindow();
+  }, { passive: true });
   scroller.addEventListener('keydown', (event) => {
     // The filter inputs live inside this container; leave their keys alone.
     if (event.target !== scroller) return;
     const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 20, PageUp: -20 }[event.key];
     if (step !== undefined) { event.preventDefault(); moveSelection(step); return; }
     if (event.key === 'Home') { event.preventDefault(); jumpTo(0); }
-    if (event.key === 'End') { event.preventDefault(); jumpTo(table.rows.length - 1); }
+    if (event.key === 'End' && table) { event.preventDefault(); jumpTo(table.rows.length - 1); }
   });
 
   // --- assembly ---------------------------------------------------------
@@ -602,7 +698,19 @@ export function buildFeatureInfoView() {
     id: 'features', label: 'Feature Info', group: 'Results', requiresRun: true,
     node, rail: true,
     onShow: async () => {
-      await load({ keepScroll: false });
+      if (table && loadedRun === runId()) {
+        // Same run, and everything that changes the table (a filter, a
+        // search) reloads it itself -- so coming back shows the list as it
+        // was left instead of fetching every row again and jumping to the top.
+        buildToolbar();
+        scroller.scrollTop = lastScroll;
+        renderWindow(true);
+      } else {
+        lastScroll = 0;
+        await load({ keepScroll: false });
+      }
+      // A feature picked on a plot is the reason for coming here.
+      revealSelection();
       await autoSearch();
       scroller.focus({ preventScroll: true });
     },

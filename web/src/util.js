@@ -98,6 +98,25 @@ export function debounce(fn, wait = 250) {
   };
 }
 
+/** Run `fn` at once when calls are sparse, and once after they stop when
+ *  they come in a burst.
+ *
+ *  For work a selection triggers: a single click should respond immediately,
+ *  but a held arrow key should not start a round of requests for every row
+ *  it passes -- only for the one it comes to rest on. */
+export function settle(fn, wait = 140) {
+  let timer = null;
+  let last = -Infinity;
+  return (...args) => {
+    const now = performance.now();
+    const quiet = now - last > wait;
+    last = now;
+    clearTimeout(timer);
+    if (quiet) fn(...args);
+    else timer = setTimeout(() => fn(...args), wait);
+  };
+}
+
 export function field(label, control, hint) {
   return el('div', { class: 'field' }, [
     el('label', { text: label }),

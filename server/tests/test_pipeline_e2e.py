@@ -291,7 +291,8 @@ def test_database_search_finds_matches(client, completed_run):
     table = client.post(f'/api/runs/{completed_run}/features',
                         json={'limit': 20, 'sort': 'hits', 'descending': True,
                               'only_searched': True}).json()
-    top = [row[-1] for row in table['rows']]
+    column = [c['key'] for c in table['columns']].index('hits')
+    top = [row[column] for row in table['rows']]
     assert top[0] and top[0] > 0, f'top of a hits-descending sort is {top[:5]}'
 
 
@@ -386,3 +387,89 @@ def test_without_a_fragment_file_ms2_only_is_unavailable(client, completed_run):
                        json={'limit': 0, 'ms2_only': True}).json()
     assert body['has_fragments'] is False
     assert body['total'] > 0
+
+
+def test_ms2_hits_column_and_msms_search_without_fragments(client, completed_run):
+    body = client.post(f'/api/runs/{completed_run}/features', json={'limit': 0}).json()
+    labels = [c['label'] for c in body['columns']]
+    assert 'MS1 hits' in labels and 'MS2 hits' in labels
+    response = client.post(f'/api/runs/{completed_run}/msmssearch', json={})
+    assert response.status_code == 404
+
+
+def test_a_feature_from_another_run_is_404_on_every_feature_route(client, completed_run):
+    """A selection carried over from a different run asks for an id this run
+    does not have. That is "not found", not a server error."""
+    for route in ('feature', 'feature/abundance', 'feature/matches', 'feature/msms'):
+        response = client.get(f'/api/runs/{completed_run}/{route}',
+                              params={'compound': 'not-a-feature-of-this-run'})
+        expected = (200, 404) if route == 'feature/abundance' else (404,)
+        assert response.status_code in expected, f'{route}: {response.status_code} {response.text}'
+
+
+def test_a_numeric_filter_leaves_out_features_with_no_value(client, completed_run):
+    """No MS/MS search has run here, so no feature has an MS2 hit count; a
+    filter asking for at least one must not keep them all."""
+    body = client.post(f'/api/runs/{completed_run}/features',
+                       json={'limit': 0, 'filters': {'msms_hits': {'min': 1}}}).json()
+    assert body['total'] == 0
+    unfiltered = client.post(f'/api/runs/{completed_run}/features', json={'limit': 0}).json()
+    assert unfiltered['total'] > 0
+    assert all(row[7] is None for row in unfiltered['rows'])
+
+
+def test_a_repeated_plot_request_gives_the_same_answer(client, completed_run):
+    """Payloads are cached per run and options; different options must not
+    be served each other's."""
+    def ordination(**options):
+        response = client.post(f'/api/runs/{completed_run}/plots/ordination', json=options)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    scores = ordination(method='PCA', view='Scores')
+    assert ordination(method='PCA', view='Scores') == scores
+    loadings = ordination(method='PCA', view='Loadings')
+    assert 'loadings' in loadings and 'series' not in loadings
+    assert loadings['explained_variance'] == scores['explained_variance'], \
+        'both views read the same solved ordination'
+    fewer = ordination(method='PCA', view='Loadings', top_n=5)
+    assert len(fewer['loadings']) == 5 < len(loadings['loadings'])
+    assert ordination(method='NMDS', view='Scores')['x_label'] == 'NMDS1'
+
+
+def test_the_database_search_shows_up_in_cached_views(client, completed_run):
+    """The search rewrites iondict.csv; nothing cached from before it may be
+    served afterwards."""
+    before = client.post(f'/api/runs/{completed_run}/features', json={'limit': 0}).json()
+    client.post(f'/api/runs/{completed_run}/plots/mzrt', json={})
+    assert client.post(f'/api/runs/{completed_run}/dbsearch').status_code == 200
+    after = client.post(f'/api/runs/{completed_run}/features', json={'limit': 0}).json()
+    assert after['searched'] is True
+    assert after['total'] == before['total']
+    assert any(row[6] is not None for row in after['rows'])
+    compound = after['rows'][0][0]
+    detail = client.get(f'/api/runs/{completed_run}/feature', params={'compound': compound}).json()
+    assert detail['fields'].get('hits') is not None
+    assert client.post(f'/api/runs/{completed_run}/plots/mzrt', json={}).status_code == 200
+
+
+def test_download_all_is_a_readable_archive(client, completed_run):
+    import io
+    import zipfile
+
+    listed = {item['name']: item['size']
+              for item in client.get(f'/api/runs/{completed_run}/downloads').json()}
+    response = client.get(f'/api/runs/{completed_run}/downloads.zip')
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.testzip() is None
+        sizes = {info.filename: info.file_size for info in archive.infolist()}
+    assert sizes == listed
+
+
+def test_runs_are_listed_with_their_submission_time(client, completed_run):
+    runs = client.get('/api/runs').json()
+    entry = next(run for run in runs if run['run_id'] == completed_run)
+    request = client.get(f'/api/runs/{completed_run}/request').json()
+    assert entry['created_at'] == request['created_at']
+    assert entry['created_at'] <= entry['started_at'] <= entry['finished_at']

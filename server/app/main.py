@@ -49,6 +49,11 @@ async def lifespan(app: FastAPI):
     if removed:
         print(f'pruned {removed} expired session(s)')
     jobs.manager.start()
+    from .core import rdkit_available
+    from .plotdata.feature import atlas_available
+    if config.PREWARM and rdkit_available and atlas_available():
+        from .plotdata import hits
+        hits.prewarm()
     sweeper = asyncio.create_task(_prune_periodically())
     try:
         yield
@@ -70,7 +75,11 @@ app = FastAPI(
 # for ~1000 features is 2.7 MB raw and 1.1 MB gzipped, and Plotly itself is
 # 4.3 MB raw and 1.2 MB gzipped. Without this every plot pays full freight on
 # the wire, which is most of why a big heatmap felt slow to appear.
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+#
+# Level 4, not the middleware's default of 9: on a 600 KB payload of numbers
+# level 9 spends ~240 ms to produce 201 KB where level 4 spends ~9 ms to
+# produce 209 KB. At 9 the compression cost more than building most plots.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=4)
 
 # Routes that must answer before anyone is signed in: the health check (used
 # by container orchestrators, which have no cookies) and the login endpoints
@@ -93,12 +102,52 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request.state.user = auth.read_token(token) if token else None
 
         path = request.url.path
-        if (auth.required() and path.startswith('/api/')
+        api = path.startswith('/api/')
+        if (auth.required() and api
                 and not path.startswith(_OPEN_PATHS)
                 and not request.state.user):
             return JSONResponse(status_code=401,
                                 content={'detail': 'sign in to use this server'})
-        return await call_next(request)
+
+        # The upload routes count bytes as they copy the file into the
+        # library, but by then the form parser has already spooled the whole
+        # body to disk. A request that declares itself over the limit is
+        # refused here instead, before any of it is read.
+        if api and request.method in ('POST', 'PUT'):
+            declared = request.headers.get('content-length', '')
+            if declared.isdigit() and int(declared) > config.MAX_UPLOAD_BYTES + _FORM_OVERHEAD_BYTES:
+                return JSONResponse(status_code=413, content={
+                    'detail': f'upload exceeds the '
+                              f'{config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit'})
+
+        response = await call_next(request)
+        if 'cache-control' not in response.headers:
+            response.headers['Cache-Control'] = _cache_policy(path)
+        return response
+
+
+# Room for the multipart boundaries and the form's other fields.
+_FORM_OVERHEAD_BYTES = 1024 * 1024
+
+
+def _cache_policy(path):
+    """What a browser may do with a response that set no policy of its own.
+
+    Static files carry an ETag and a Last-Modified but said nothing about
+    freshness, which leaves it to the browser's guess -- typically a tenth of
+    the file's age. After an update that meant some of the front end's
+    modules came from the new deployment and some from the cache, for hours.
+    ``no-cache`` still caches; it only makes the browser ask, and an
+    unchanged file costs a 304. The images never change under a given name.
+
+    API responses are a workspace's data and its downloads (a run's
+    ``iondict.csv`` is rewritten by a database search), so they are not kept.
+    """
+    if path.startswith('/api/'):
+        return 'no-store'
+    if path.startswith('/assets/'):
+        return 'public, max-age=86400'
+    return 'no-cache'
 
 
 app.add_middleware(AuthMiddleware)
@@ -116,11 +165,13 @@ def health():
     user hit an error."""
     from .core import rdkit_available, structures_available
     from .plotdata.feature import atlas_available
+    from .plotdata.msms import available as msms_available
     return {
         'status': 'ok',
         'npatlas': atlas_available(),
         'structures': structures_available,
         'chemistry': rdkit_available,
+        'msms': msms_available(),
         'max_upload_mb': config.MAX_UPLOAD_BYTES // (1024 * 1024),
         'max_concurrent_jobs': config.MAX_CONCURRENT_JOBS,
     }

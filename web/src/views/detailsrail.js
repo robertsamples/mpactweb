@@ -15,6 +15,7 @@ import { collapsible, makeRowResizer } from '../components.js';
 import { clear, el, num } from '../util.js';
 import { FEATURE_FIELDS } from '../fields.js';
 import { abundance as drawAbundance, spectrum as drawSpectrum } from '../plots/review.js';
+import { plotlyReady } from '../plots/base.js';
 
 const runId = () => (store.get('run') || {}).run_id;
 
@@ -101,12 +102,23 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
   };
 
   let refreshMatches = null;
-  store.on('hitFilter', () => { if (refreshMatches) refreshMatches(); });
+  store.on(['hitFilter', 'msmsVersion'], () => { if (refreshMatches) refreshMatches(); });
 
-  const render = async () => {
+  // Re-rendering the same feature (every view switch asks) would reload
+  // every section and make the rail flash.
+  let rendered = null;
+  let actions = null;
+  store.on('view', () => {
+    if (actions) actions.classList.toggle('hidden', store.get('view') === 'features');
+  });
+
+  const render = async ({ force = false } = {}) => {
     const compound = store.get('selectedFeature');
     const id = runId();
-    if (!compound || !id) { showEmpty(); return; }
+    if (!compound || !id) { rendered = null; showEmpty(); return; }
+    const key = `${id}\u0000${compound}`;
+    if (!force && key === rendered) return;
+    rendered = key;
 
     const mine = ++token;
     node.classList.remove('empty');
@@ -158,7 +170,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       loaded.add('abundance');
       abundanceBody.replaceChildren(el('div', { class: 'placeholder', text: 'Loading...' }));
       try {
-        const payload = await api.abundance(id, compound);
+        const [payload] = await Promise.all([api.abundance(id, compound), plotlyReady()]);
         if (mine !== token) return;
         drawAbundance(abundanceBody, payload, { compact: true });
       } catch {
@@ -169,14 +181,44 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       }
     };
 
+    // One MS/MS match request per feature, shared by the spectrum (for its
+    // mirror reference) and the match browser.
+    let msmsRequest = null;
+    const msmsMatches = () => {
+      if (!msmsRequest) {
+        msmsRequest = (store.get('health') || {}).msms
+          ? api.msms(id, compound, store.get('hitFilter')).catch(() => null)
+          : Promise.resolve(null);
+      }
+      return msmsRequest;
+    };
+    let spectrumPayload = null;
+    let reference = null;
+    const drawSpec = () => {
+      if (spectrumPayload) drawSpectrum(spectrumBody, spectrumPayload, { compact: true, reference });
+    };
+    const useReference = (match, payload) => {
+      reference = match ? {
+        mz: match.peak_mz, intensity: match.peak_intensity, name: match.name,
+        shift: payload && payload.match_precursor === false ? match.delta_mz : null,
+      } : null;
+      drawSpec();
+    };
+
     const loadSpectrum = async () => {
       if (loaded.has('spectrum')) return;
       loaded.add('spectrum');
       spectrumBody.replaceChildren(el('div', { class: 'placeholder', text: 'Loading...' }));
       try {
-        const payload = await api.spectrum(id, compound);
+        const [payload, msms] = await Promise.all([api.spectrum(id, compound), msmsMatches(),
+                                                   plotlyReady()]);
         if (mine !== token) return;
-        drawSpectrum(spectrumBody, payload, { compact: true });
+        spectrumPayload = payload;
+        if (!reference && msms && msms.matches && msms.matches.length) {
+          useReference(msms.matches.find((match) => match.passes) || msms.matches[0], msms);
+        } else {
+          drawSpec();
+        }
       } catch (error) {
         loaded.delete('spectrum');
         if (mine !== token) return;
@@ -187,21 +229,32 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     const loadMatches = async () => {
       if (loaded.has('matches')) return;
       loaded.add('matches');
-      try {
-        const payload = await api.matches(id, compound, store.get('hitFilter'));
-        if (mine !== token) return;
-        matchesSection.setBody(matchesPanel(payload, id));
-      } catch (error) {
-        loaded.delete('matches');
-        if (mine !== token) return;
-        matchesSection.setBody(el('div', { class: 'notice warn', text: error.message }));
+      const health = store.get('health') || {};
+      const [atlas, msms] = await Promise.allSettled([
+        api.matches(id, compound, store.get('hitFilter')),
+        health.msms ? msmsMatches() : Promise.resolve(null),
+      ]);
+      if (mine !== token) return;
+      const sources = [atlasSource(atlas)];
+      if (msms.status === 'fulfilled' && msms.value && msms.value.searched) {
+        sources.push(msmsSource(msms.value, (match) => useReference(match, msms.value)));
       }
+      matchesSection.setBody(matchesPanel(sources, id));
     };
 
     refreshMatches = () => {
       if (mine !== token) return;
+      msmsRequest = null;
+      reference = null;
       loaded.delete('matches');
       if (matchesSection.isOpen()) loadMatches();
+      if (spectrumPayload) {
+        msmsMatches().then((msms) => {
+          if (mine !== token) return;
+          const matches = (msms && msms.matches) || [];
+          useReference(matches.find((match) => match.passes) || matches[0], msms);
+        });
+      }
     };
 
     const identitySection = section('identity', 'Details', null, identityBody, loadIdentity);
@@ -212,8 +265,9 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
 
     const children = [heading, identitySection, abundanceSection,
                       spectrumSection, matchesSection];
-    if (onOpenFeatureInfo && store.get('view') !== 'features') {
-      children.push(el('div', { class: 'rail-actions' }, [
+    if (onOpenFeatureInfo) {
+      children.push(actions = el('div', {
+        class: `rail-actions ${store.get('view') === 'features' ? 'hidden' : ''}` }, [
         el('button', {
           class: 'btn small', text: 'Open in Feature Info', type: 'button',
           on: { click: () => onOpenFeatureInfo() },
@@ -258,37 +312,111 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     return { node, plot };
   }
 
-  /* Hit list and structure together, with the structure following the
-   * highlighted hit. The desktop's compound window shows both at once and
-   * redraws the structure as you move down the list, so a match is never a
-   * bare name you have to click before you can see what it is. */
-  function matchesPanel(payload, id) {
-    if (!payload.matches.length) {
-      return el('p', { class: 'muted' },
-        [`No match within ${payload.ppm_threshold} ppm of m/z ${num(payload.mz, 4)}.`]);
+  function atlasSource(result) {
+    if (result.status !== 'fulfilled') {
+      return { key: 'npatlas', label: 'NPAtlas', items: [], empty: result.reason.message };
     }
-
+    const payload = result.value;
     const filtered = payload.matches.some((match) => match.passes !== undefined);
-    let index = filtered ? Math.max(0, payload.matches.findIndex((match) => match.passes)) : 0;
+    return {
+      key: 'npatlas', label: 'NPAtlas', items: payload.matches,
+      empty: `No match within ${payload.ppm_threshold} ppm of m/z ${num(payload.mz, 4)}.`,
+      start: filtered ? Math.max(0, payload.matches.findIndex((match) => match.passes)) : 0,
+      dim: (match) => filtered && !match.passes,
+      name: (match) => match.compound_name || '(unnamed)',
+      right: (match) => `${num(match.ppm, 2)} ppm`,
+      smiles: (match) => match.compound_smiles,
+      caption: (match) => [
+        [match.compound_molecular_formula, `${num(match.compound_accurate_mass, 4)} Da`,
+         `${num(match.ppm, 2)} ppm`],
+        [`${match.genus || ''} ${match.origin_species || ''}`.trim(),
+         match.source_database && match.source_database !== 'NPAtlas' ? match.source_database : ''],
+      ],
+      tags: (match) => [...(match.warheads || []), match.siderophore ? 'Siderophore' : '',
+                        match.conjugated ? `${match.conjugated} conjugated atoms` : ''],
+    };
+  }
+
+  function msmsSource(payload, onShow) {
+    const filtered = payload.matches.some((match) => match.passes !== undefined);
+    return {
+      key: 'msms', label: 'MS-DIAL', items: payload.matches, onShow,
+      empty: payload.has_spectrum ? `No match with cosine ≥ ${payload.min_score}.`
+                                  : 'No MS/MS spectrum searched.',
+      start: filtered ? Math.max(0, payload.matches.findIndex((match) => match.passes)) : 0,
+      dim: (match) => filtered && !match.passes,
+      name: (match) => match.name || '(unnamed)',
+      right: (match) => `cos ${num(match.score, 3)}`,
+      smiles: (match) => match.smiles,
+      caption: (match) => [
+        [match.formula, match.precursortype, `m/z ${num(match.precursor_mz, 4)}`],
+        [`cosine ${num(match.score, 3)}`, `${match.matched} peaks`,
+         match.delta_mz === null ? '' : `Δm/z ${num(match.delta_mz, 4)}`,
+         match.feature_ion ? `as ${match.feature_ion}` : ''],
+        [match.ontology],
+      ],
+      tags: (match) => [...(match.warheads || []), match.siderophore ? 'Siderophore' : '',
+                        match.conjugated ? `${match.conjugated} conjugated atoms` : ''],
+    };
+  }
+
+  /* Hit list and structure together, with the structure following the
+   * highlighted hit, and a switch between sources when there is more than
+   * one. The chosen source carries over to the next feature. */
+  function matchesPanel(sources, id) {
     const structure = el('div', { class: 'structure' });
     const caption = el('div', { class: 'match-caption' });
     const position = el('span', { class: 'muted' });
     // Focusable so the arrow keys reach it: every list in this app should
     // step with the keyboard, not just the feature table.
     const list = el('div', { class: 'match-list', tabIndex: 0 });
+    const body = el('div', { class: 'matches-body' });
+    const prev = el('button', { class: 'btn small', type: 'button', text: '\u2039',
+                                title: 'Previous match', on: { click: () => show(index - 1) } });
+    const next = el('button', { class: 'btn small', type: 'button', text: '\u203a',
+                                title: 'Next match', on: { click: () => show(index + 1) } });
+    let source = sources.find((entry) => entry.key === preferredSource) || sources[0];
+    let index = 0;
+    let rows = [];
 
-    const rows = payload.matches.map((match, i) => el('button', {
-      class: `match-row ${filtered && !match.passes ? 'filtered-out' : ''}`, type: 'button',
-      on: { click: () => show(i) },
-    }, [
-      el('span', { class: 'match-name', text: match.compound_name || '(unnamed)' }),
-      el('span', { class: 'match-ppm', text: `${num(match.ppm, 2)} ppm` }),
-    ]));
-    list.append(...rows);
+    const toggle = sources.length > 1 ? el('div', { class: 'source-toggle' }, sources.map((entry) =>
+      el('button', {
+        class: 'btn small', type: 'button', text: entry.label, dataset: { key: entry.key },
+        on: { click: () => { preferredSource = entry.key; use(entry); } },
+      }))) : null;
 
-    function show(next) {
-      index = Math.max(0, Math.min(payload.matches.length - 1, next));
-      const match = payload.matches[index];
+    function use(entry) {
+      source = entry;
+      if (toggle) {
+        for (const button of toggle.children) {
+          button.classList.toggle('primary', button.dataset.key === entry.key);
+        }
+      }
+      rows = entry.items.map((match, i) => el('button', {
+        class: `match-row ${entry.dim(match) ? 'filtered-out' : ''}`, type: 'button',
+        on: { click: () => show(i) },
+      }, [
+        el('span', { class: 'match-name', text: entry.name(match) }),
+        el('span', { class: 'match-ppm', text: entry.right(match) }),
+      ]));
+      clear(list).append(...rows);
+      const empty = !entry.items.length;
+      prev.disabled = empty;
+      next.disabled = empty;
+      if (empty) {
+        position.textContent = '0 of 0';
+        clear(body).append(el('p', { class: 'muted' }, [entry.empty]));
+        return;
+      }
+      clear(body).append(structure, caption, list);
+      show(entry.start || 0);
+    }
+
+    function show(target) {
+      const items = source.items;
+      if (!items.length) return;
+      index = Math.max(0, Math.min(items.length - 1, target));
+      const match = items[index];
       rows.forEach((row, i) => {
         row.classList.toggle('active', i === index);
         // Only the active row is a tab stop, so Tab moves past the list
@@ -296,33 +424,25 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         row.tabIndex = i === index ? 0 : -1;
       });
       rows[index].scrollIntoView({ block: 'nearest' });
-      position.textContent = `${index + 1} of ${payload.matches.length}`;
+      position.textContent = `${index + 1} of ${items.length}`;
+      if (source.onShow) source.onShow(match);
 
+      const line = (parts) => el('div', { class: 'muted',
+                                          text: parts.filter(Boolean).join('  ·  ') });
       clear(caption).append(
-        el('div', { class: 'match-title', text: match.compound_name || '(unnamed)' }),
-        el('div', { class: 'muted', text: [
-          match.compound_molecular_formula,
-          `${num(match.compound_accurate_mass, 4)} Da`,
-          `${num(match.ppm, 2)} ppm`,
-        ].filter(Boolean).join('  ·  ') }),
-        el('div', { class: 'muted', text: [
-          `${match.genus || ''} ${match.origin_species || ''}`.trim(),
-          match.source_database && match.source_database !== 'NPAtlas' ? match.source_database : '',
-        ].filter(Boolean).join('  ·  ') }),
-        el('div', { class: 'match-tags', text: [
-          ...(match.warheads || []),
-          match.siderophore ? 'Siderophore' : '',
-          match.conjugated ? `${match.conjugated} conjugated atoms` : '',
-        ].filter(Boolean).join('  ·  ') }));
+        el('div', { class: 'match-title', text: source.name(match) }),
+        ...source.caption(match).map(line),
+        el('div', { class: 'match-tags', text: source.tags(match).filter(Boolean).join('  ·  ') }));
 
       clear(structure);
-      if (!match.compound_smiles) {
+      const smiles = source.smiles(match);
+      if (!smiles) {
         structure.append(el('div', { class: 'muted', text: 'No structure for this match.' }));
         return;
       }
       structure.append(el('img', {
-        src: api.structureUrl(id, match.compound_smiles),
-        alt: match.compound_name || 'structure',
+        src: api.structureUrl(id, smiles),
+        alt: source.name(match),
         on: { error: () => clear(structure).append(el('div', { class: 'muted',
           text: 'Structure rendering is unavailable on this server.' })) },
       }));
@@ -332,19 +452,13 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10 }[event.key];
       if (step !== undefined) { event.preventDefault(); show(index + step); return; }
       if (event.key === 'Home') { event.preventDefault(); show(0); }
-      if (event.key === 'End') { event.preventDefault(); show(payload.matches.length - 1); }
+      if (event.key === 'End') { event.preventDefault(); show(source.items.length - 1); }
     });
 
-    const nav = el('div', { class: 'match-nav' }, [
-      el('button', { class: 'btn small', type: 'button', text: '\u2039',
-                     title: 'Previous match', on: { click: () => show(index - 1) } }),
-      position,
-      el('button', { class: 'btn small', type: 'button', text: '\u203a',
-                     title: 'Next match', on: { click: () => show(index + 1) } }),
-    ]);
-
-    const panel = el('div', { class: 'matches-panel' }, [nav, structure, caption, list]);
-    show(index);
+    const nav = el('div', { class: `match-nav ${toggle ? 'with-toggle' : ''}` },
+                   [toggle, el('div', { class: 'match-steps' }, [prev, position, next])]);
+    const panel = el('div', { class: 'matches-panel' }, [nav, body]);
+    use(source);
     return panel;
   }
 
@@ -374,6 +488,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
  * width, the collapsed state and which sections are open are the same
  * wherever you are. */
 let instance = null;
+let preferredSource = 'npatlas';
 
 export function detailsRail(options) {
   if (!instance) instance = createDetailsRail(options);

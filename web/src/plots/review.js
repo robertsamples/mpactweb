@@ -369,6 +369,92 @@ export function abundance(surface, payload, options = {}) {
   }), compact ? { displayModeBar: false } : {});
 }
 
+/** m/z labels for the most intense peaks that fit: a label is kept only if
+ *  its box overlaps no kept label and no taller peak beneath it. Works in
+ *  pixels, from the plot area's size and the visible axis ranges. `side` is
+ *  1 for sticks drawn upwards and -1 for the mirrored reference below. */
+function peakLabels(surface, mzs, values, side, compact) {
+  const layout = surface._fullLayout;
+  if (!layout || !layout.xaxis || !layout.yaxis) return [];
+  const width = layout.xaxis._length;
+  const height = layout.yaxis._length;
+  const [x0, x1] = layout.xaxis.range;
+  const [y0, y1] = layout.yaxis.range;
+  const px = (mz) => ((mz - x0) / (x1 - x0)) * width;
+  const py = (value) => ((value - y0) / (y1 - y0)) * height;
+  const base = py(0);
+  const digits = compact ? 3 : 4;
+  const charWidth = compact ? 5 : 6.2;
+  const boxHeight = compact ? 10 : 13;
+  const limit = compact ? 6 : 12;
+
+  const peaks = mzs.map((mz, i) => ({ mz, y: values[i] }))
+    .filter((peak) => peak.mz >= x0 && peak.mz <= x1);
+  const tallest = Math.max(...peaks.map((peak) => Math.abs(peak.y)), 0);
+  // Distance of a stick's tip from the baseline, on its own side.
+  const reach = (value) => side * (py(value) - base);
+  const placed = [];
+  for (const peak of [...peaks].sort((a, b) => Math.abs(b.y) - Math.abs(a.y))) {
+    if (placed.length >= limit || Math.abs(peak.y) < tallest * 0.03) break;
+    const text = peak.mz.toFixed(digits);
+    const half = (text.length * charWidth) / 2 + 2;
+    // Slide a label at the frame's edge inward rather than drop it.
+    const centre = Math.min(Math.max(px(peak.mz), half), width - half);
+    const near = reach(peak.y) + 2;
+    const box = { left: centre - half, right: centre + half, shift: centre - px(peak.mz),
+                  near, far: near + boxHeight };
+    const room = side > 0 ? height - base : base;
+    if (box.far > room) continue;
+    const clashes = placed.some((other) => box.left < other.right && box.right > other.left
+                                          && box.near < other.far && box.far > other.near)
+      || peaks.some((other) => other !== peak && px(other.mz) > box.left
+                    && px(other.mz) < box.right && reach(other.y) > box.near);
+    if (clashes) continue;
+    placed.push({ ...box, peak, text });
+  }
+  return placed.map(({ peak, text, shift }) => ({
+    x: peak.mz, y: peak.y, text, showarrow: false, xshift: shift,
+    yanchor: side > 0 ? 'bottom' : 'top', yshift: side,
+    font: { size: compact ? 8 : 10, color: '#333' },
+  }));
+}
+
+const MATCH_TOLERANCE = 0.02;
+const QUERY_COLOUR = '#111';
+const REFERENCE_COLOUR = '#8a8a8a';
+const MATCHED_QUERY = '#1d7d74';
+const MATCHED_REFERENCE = '#c0392b';
+
+/** Which peaks on each side have a partner on the other, directly or, for an
+ *  analogue, after shifting by the precursor difference. */
+function matchedPeaks(queryMz, referenceMz, shift) {
+  const near = (a, b) => Math.abs(a - b) <= MATCH_TOLERANCE;
+  const shifted = shift && Math.abs(shift) > MATCH_TOLERANCE ? shift : null;
+  const query = queryMz.map((q) => referenceMz.some((r) => near(q, r)
+                                                    || (shifted !== null && near(q, r + shifted))));
+  const reference = referenceMz.map((r) => queryMz.some((q) => near(q, r)
+                                                       || (shifted !== null && near(q, r + shifted))));
+  return { query, reference };
+}
+
+function sticks(mzs, values, colours) {
+  // One trace per colour: Plotly line traces take a single colour.
+  const byColour = new Map();
+  mzs.forEach((mz, i) => {
+    const colour = colours[i];
+    if (!byColour.has(colour)) byColour.set(colour, { x: [], y: [] });
+    const trace = byColour.get(colour);
+    trace.x.push(mz, mz, null);
+    trace.y.push(0, values[i], null);
+  });
+  return [...byColour].map(([colour, { x, y }]) => ({
+    type: 'scatter', mode: 'lines', x, y,
+    line: { color: colour, width: 1 }, hoverinfo: 'skip', showlegend: false,
+  }));
+}
+
+/** MS2 spectrum; with `options.reference` ({mz, intensity, shift, name}) a
+ *  mirror plot, the reference drawn downwards and both sides scaled to 100. */
 export function spectrum(surface, payload, options = {}) {
   if (!payload.found || !payload.mz.length) {
     message(surface, 'No MS2 spectrum for this feature in the loaded fragment database.');
@@ -378,36 +464,78 @@ export function spectrum(surface, payload, options = {}) {
   // of the `compact ? ... : ...` reads below threw ReferenceError and the
   // panel showed "compact is not defined" instead of a spectrum.
   const compact = Boolean(options.compact);
-  // Stick spectrum: one zero-anchored vertical per fragment, the direct
-  // equivalent of the desktop's ax.vlines call.
-  const x = [];
-  const y = [];
-  payload.mz.forEach((mz, i) => {
-    x.push(mz, mz, null);
-    y.push(0, payload.intensity[i], null);
+  const reference = options.reference && options.reference.mz && options.reference.mz.length
+    ? options.reference : null;
+
+  let top = payload.intensity;
+  let bottom = [];
+  let colours = payload.mz.map(() => QUERY_COLOUR);
+  let referenceColours = [];
+  if (reference) {
+    const peak = Math.max(...payload.intensity);
+    top = payload.intensity.map((value) => (100 * value) / peak);
+    bottom = reference.intensity.map((value) => -value);
+    const matched = matchedPeaks(payload.mz, reference.mz, reference.shift);
+    colours = matched.query.map((hit) => (hit ? MATCHED_QUERY : QUERY_COLOUR));
+    referenceColours = matched.reference.map((hit) => (hit ? MATCHED_REFERENCE : REFERENCE_COLOUR));
+  }
+
+  const allMz = reference ? [...payload.mz, ...reference.mz] : payload.mz;
+  const xRange = [0, Math.max(...allMz) * 1.05];
+  // Headroom beyond the base peak(s) for their labels.
+  const yRange = reference ? [-128, 128] : [0, Math.max(...top) * 1.15];
+
+  const hover = (mzs, values, label) => ({
+    type: 'scatter', mode: 'markers', x: mzs, y: values,
+    marker: { size: 5, color: 'rgba(0,0,0,0)' },
+    text: mzs.map((mz, i) => `${label}m/z ${num(mz, 4)}<br>`
+                             + (reference ? `${num(Math.abs(values[i]), 1)}%`
+                                          : `abundance ${num(values[i], 0)}`)),
+    hovertemplate: '%{text}<extra></extra>', showlegend: false,
   });
 
-  draw(surface, [
-    {
-      type: 'scatter', mode: 'lines', x, y,
-      line: { color: '#111', width: 1 }, hoverinfo: 'skip', showlegend: false,
-    },
-    {
-      type: 'scatter', mode: 'markers',
-      x: payload.mz, y: payload.intensity,
-      marker: { size: 5, color: 'rgba(0,0,0,0)' },
-      text: payload.mz.map((mz, i) =>
-        `m/z ${num(mz, 4)}<br>abundance ${num(payload.intensity[i], 0)}`),
-      hovertemplate: '%{text}<extra></extra>', showlegend: false,
-    },
-  ], baseLayout({
+  const traces = [...sticks(payload.mz, top, colours), hover(payload.mz, top, '')];
+  if (reference) {
+    traces.push(...sticks(reference.mz, bottom, referenceColours),
+                hover(reference.mz, bottom, reference.name ? `${reference.name}<br>` : ''));
+  }
+
+  const yaxis = { ...baseLayout().yaxis, range: yRange,
+                  title: compact ? undefined : axisTitle(reference ? 'Relative abundance' : 'Abundance'),
+                  tickfont: { size: compact ? 8 : 12 } };
+  if (reference) {
+    Object.assign(yaxis, { tickvals: [-100, -50, 0, 50, 100], ticktext: ['100', '50', '0', '50', '100'],
+                           zeroline: true, zerolinecolor: '#3c3c3c', zerolinewidth: 1 });
+  }
+
+  const drawn = draw(surface, traces, baseLayout({
     margin: compact ? { l: 44, r: 8, t: 8, b: 34 } : { l: 66, r: 16, t: 16, b: 50 },
     showlegend: false,
-    xaxis: { ...baseLayout().xaxis, rangemode: 'tozero',
+    xaxis: { ...baseLayout().xaxis, range: xRange,
              title: compact ? undefined : axisTitle('m/z'),
              tickfont: { size: compact ? 8 : 12 } },
-    yaxis: { ...baseLayout().yaxis, rangemode: 'tozero',
-             title: compact ? undefined : axisTitle('Abundance'),
-             tickfont: { size: compact ? 8 : 12 } },
+    yaxis,
   }), compact ? { displayModeBar: false } : {});
+
+  const relabel = () => {
+    if (!surface._fullLayout) return;
+    const annotations = peakLabels(surface, payload.mz, top, 1, compact);
+    if (reference) annotations.push(...peakLabels(surface, reference.mz, bottom, -1, compact));
+    surface._labelling = true;
+    Promise.resolve(Plotly.relayout(surface, { annotations }))
+      .finally(() => { surface._labelling = false; });
+  };
+  Promise.resolve(drawn).then(relabel);
+  if (!surface._labelListener) {
+    surface._labelListener = true;
+    surface.on('plotly_relayout', (event) => {
+      if (surface._labelling || !event) return;
+      const keys = Object.keys(event);
+      if (keys.some((key) => key.startsWith('xaxis') || key.startsWith('yaxis')
+                             || key === 'autosize' || key === 'width' || key === 'height')) {
+        surface._relabel();
+      }
+    });
+  }
+  surface._relabel = relabel;
 }

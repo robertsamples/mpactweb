@@ -67,7 +67,8 @@ def heatmap(results, options=None):
     # Feature rows stay in peak-table file order; only columns change with the
     # view -- the same invariant the desktop relies on for its feature<->row
     # navigation.
-    frame = results.filtered(header=(2,), index_col=0).iloc[:, 2:]
+    # Read-only: the slice and the groupbys below all build new frames.
+    frame = results.filtered(header=(2,), index_col=0, copy=False).iloc[:, 2:]
     raw_header = results.raw_header()
 
     if view == labelutil.BIOLOGICAL:
@@ -109,7 +110,9 @@ def heatmap(results, options=None):
         # Rounded: these are row-scaled 0..1 values rendered as one of 256
         # colours, so full float64 precision is ~3x the payload for a
         # difference no display can show.
-        'z': [[round(float(v), 4) for v in row] for row in reordered],
+        # (Rounded in numpy: a Python round() per cell was the slowest line in
+        # this builder once the matrix reached a few hundred thousand cells.)
+        'z': np.round(reordered, 4).tolist(),
         'features': [feature_ids[i] for i in row_order],
         'columns': [display[j] for j in col_order],
         'column_ids': [raw_columns[j] for j in col_order],

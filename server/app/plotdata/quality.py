@@ -84,8 +84,7 @@ def treemap(results, options=None):
     """How many features each enabled filter removed."""
     params = results.params()
     meta = results.meta()
-    iondict = results.iondict()
-    filtered = results.filtered(header=(0, 1, 2), index_col=None)
+    iondict = results.iondict(copy=False)
 
     counts, colours = {}, []
     current = len(iondict.index)
@@ -108,7 +107,10 @@ def treemap(results, options=None):
         counts['Insource'] = int(meta.get('filter_counts', {}).get('insource', 0))
         colours.append('#00aa00')
 
-    counts['High Quality'] = int(len(filtered.index))
+    # One row of the filtered table per surviving feature; counted off the
+    # cached id list rather than by parsing the table under yet another
+    # header shape.
+    counts['High Quality'] = len(results.filtered_ids())
     colours.append('#000000')
 
     total = sum(counts.values()) or 1
@@ -174,12 +176,11 @@ def summary(results, options=None):
     """The Summary tab: run-level counts, filter yields and quality scores."""
     params = results.params()
     meta = results.meta()
-    iondict = results.iondict()
+    iondict = results.iondict(copy=False)
     header = results.raw_header()
-    filtered = results.filtered(header=(0, 1, 2), index_col=None)
 
     total_features = int(len(iondict.index))
-    surviving = int(len(filtered.index))
+    surviving = len(results.filtered_ids())
     filter_counts = meta.get('filter_counts', {})
 
     def yield_row(label, count):

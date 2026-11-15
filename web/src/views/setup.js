@@ -948,13 +948,23 @@ function runView() {
     attachDino(terminal);
 
     if (run) {
+      let pulling = false;
       const pull = async () => {
+        // Not while another pull is still out (a slow connection would stack
+        // them up), and not for a view nobody is looking at.
+        if (pulling || !node.classList.contains('active')) return;
+        pulling = true;
         try {
           const body = await api.runLog(run.run_id);
-          const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
-          log.textContent = body.log || 'No output yet.';
-          if (atBottom) log.scrollTop = log.scrollHeight;
-        } catch { /* the run may have been deleted */ }
+          const text = body.log || 'No output yet.';
+          if (log.textContent !== text) {
+            const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
+            log.textContent = text;
+            if (atBottom) log.scrollTop = log.scrollHeight;
+          }
+        } catch { /* the run may have been deleted */ } finally {
+          pulling = false;
+        }
       };
       pull();
       stopLogPolling();
@@ -1033,6 +1043,18 @@ export function buildSetupViews() {
         store.set({ settings: body.settings });
       }
       store.set({ files: await api.listFiles() });
+      // The slots are restored from this browser's storage, the library from
+      // the server. A slot can therefore name a file that is no longer there
+      // (the session expired, or it was removed from another tab): it looked
+      // empty but still counted as filled, so the form reported "file not
+      // found" as a group error instead of asking for the file.
+      const known = new Set(store.get('files').map((file) => file.id));
+      const inputs = { ...store.get('inputs') };
+      let dropped = false;
+      for (const kind of Object.keys(inputs)) {
+        if (inputs[kind] && !known.has(inputs[kind])) { inputs[kind] = null; dropped = true; }
+      }
+      if (dropped) { store.set({ inputs }); store.persistSetup(); }
       // Optional: a server may ship without the demo data.
       try { store.set({ demo: await api.demoInfo() }); } catch { /* no demo */ }
     } catch (error) {

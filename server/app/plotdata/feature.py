@@ -15,7 +15,7 @@ import pandas as pd
 
 from .. import config
 from ..core import treefilters
-from ..results import clean
+from ..results import Memo, clean
 
 # The desktop's feature-table columns, in ``searchtree.COLUMNS`` order and
 # with the same source field for each. 'Sets' and 'Groups' both come from the
@@ -28,7 +28,8 @@ TABLE_COLUMNS = (
     {'key': 'max', 'label': 'Max', 'type': 'number', 'digits': 0},
     {'key': 'groups', 'label': 'Sets', 'type': 'category'},
     {'key': 'fc', 'label': 'FC', 'type': 'number', 'digits': 3},
-    {'key': 'hits', 'label': 'Hits', 'type': 'number', 'digits': 0},
+    {'key': 'hits', 'label': 'MS1 hits', 'type': 'number', 'digits': 0},
+    {'key': 'msms_hits', 'label': 'MS2 hits', 'type': 'number', 'digits': 0},
 )
 
 
@@ -76,6 +77,30 @@ def _build_filters(spec):
     return filters
 
 
+_NOT_FINITE = (float('inf'), float('-inf'))
+
+
+def _cells(series):
+    """One table column as JSON-safe values, blanks as ``None``.
+
+    Done once per column, before filtering and sorting, rather than once per
+    cell on the way out. It also settles what a blank *is* for the filters:
+    pandas reads an empty numeric cell as NaN, which is a float, and every
+    comparison with NaN is false -- so a NaN satisfied ``RangeFilter`` and a
+    filter like "MS2 hits >= 1" kept every feature that had never been
+    searched. As ``None`` it is what that filter's rule says it should be: not
+    a number, and so never in range.
+    """
+    values = series.tolist()
+    kind = series.dtype.kind
+    if kind == 'f':
+        return [None if (value != value or value in _NOT_FINITE) else value
+                for value in values]
+    if kind in 'iub':
+        return values
+    return [value if isinstance(value, str) else clean(value) for value in values]
+
+
 class SetFilter:
     """Every ``required`` token present and no ``excluded`` token."""
 
@@ -103,30 +128,49 @@ def feature_table(results, options=None, ms2_ids=None):
     enabled for this run.
     """
     options = options or {}
-    iondict = results.iondict()
+    # Read-only here: rows are selected with a mask, never written back.
+    iondict = results.iondict(copy=False)
+    compounds = iondict['Compound'].astype(str)
+    keep = np.ones(len(iondict), dtype=bool)
 
     if not options.get('include_filtered', False):
         try:
-            surviving = set(results.filtered(header=(2,), index_col=0).index.astype(str))
-            iondict = iondict[iondict['Compound'].astype(str).isin(surviving)]
+            keep &= compounds.isin(results.surviving()).to_numpy()
         except Exception:  # noqa: BLE001 - an unreadable filtered table shouldn't
             pass          # empty the whole view; fall back to showing everything
 
     if ms2_ids is not None:
-        iondict = iondict[iondict['Compound'].astype(str).isin(ms2_ids)]
+        keep &= compounds.isin(ms2_ids).to_numpy()
 
+    from . import msms
+    msms_counts = msms.counts(results) if msms.available() else None
+
+    from . import hits
     hit_spec = None
+    if not options.get('hit_filter') and atlas_available():
+        hits.prepare(results)
     if options.get('hit_filter'):
-        from . import hits
         hit_spec = hits.normalise(options['hit_filter'])
         if hit_spec:
-            passing = hits.passing_features(results, hit_spec)
-            iondict = iondict[iondict['Compound'].astype(str).isin(passing)]
+            passing = hits.passing_features(results, hit_spec, set(compounds[keep]))
+            keep &= compounds.isin(passing).to_numpy()
 
-    rows = [
-        tuple(row.get(column['key']) for column in TABLE_COLUMNS)
-        for _, row in iondict.iterrows()
-    ]
+    iondict = iondict[keep]
+    compounds = compounds[keep]
+
+    # Column by column rather than ``iterrows``: that builds a Series per
+    # feature, which is most of the time this table takes on a large run.
+    cells = []
+    for column in TABLE_COLUMNS:
+        key = column['key']
+        if key == 'msms_hits':
+            values = _cells(compounds.map(msms_counts or {}))
+        elif key in iondict.columns:
+            values = _cells(iondict[key])
+        else:
+            values = [None] * len(iondict)
+        cells.append(values)
+    rows = list(zip(*cells))
     filters = _build_filters(options.get('filters'))
     if filters:
         rows = [row for row in rows if treefilters.row_passes(row, filters)]
@@ -176,25 +220,30 @@ def feature_table(results, options=None, ms2_ids=None):
     return {
         'plot': 'features',
         'columns': [dict(column) for column in TABLE_COLUMNS],
-        'rows': [[clean(value) for value in row] for row in page],
+        'rows': page,
         'total': total,
         'offset': offset,
         'limit': limit,
         'include_filtered': bool(options.get('include_filtered', False)),
         'hit_filter': bool(hit_spec),
+        'msms_searched': msms_counts is not None,
         'searched': bool('hits' in iondict.columns and iondict['hits'].notna().any()),
         'categories': treefilters.distinct_category_tokens(
             iondict['groups'].fillna('').tolist()) if 'groups' in iondict else [],
     }
 
 
+class UnknownFeature(ValueError):
+    """The requested compound id is not in this run's ``iondict``."""
+
+
 def feature_detail(results, compound):
     """One feature's identity fields, straight out of ``iondict``."""
-    iondict = results.iondict()
-    match = iondict[iondict['Compound'].astype(str) == str(compound)]
-    if match.empty:
-        raise ValueError(f'feature {compound!r} is not in this run')
-    row = match.iloc[0]
+    iondict = results.iondict(copy=False)
+    position = results.feature_positions().get(str(compound))
+    if position is None:
+        raise UnknownFeature(f'feature {compound!r} is not in this run')
+    row = iondict.iloc[position]
     return {
         'id': str(row['Compound']),
         'fields': {str(key): clean(value) for key, value in row.items()},
@@ -209,8 +258,7 @@ def abundance(results, compound):
     bars beside a per-sample strip/point plot; both halves are returned here
     so the client can lay them out the same way.
     """
-    filtered = results.filtered(header=(0, 1, 2), index_col=0)
-    if str(compound) not in filtered.index.astype(str):
+    if str(compound) not in results.surviving():
         # Not an error: only filtered features have per-injection abundances,
         # and most features in a run don't survive filtering.
         return {'plot': 'abundance', 'feature': str(compound), 'found': False,
@@ -218,10 +266,11 @@ def abundance(results, compound):
                           'per-injection abundances.',
                 'groups': [], 'points': []}
 
+    filtered = results.filtered(header=(0, 1, 2), index_col=0, copy=False)
     row = filtered.iloc[:, 2:].loc[str(compound)].reset_index()
     row.columns = ['biolgroup', 'sample', 'injection', 'abundance']
 
-    summary = results.summary().iloc[:, 2:].loc[str(compound)]
+    summary = results.summary(copy=False).iloc[:, 2:].loc[str(compound)]
     blank_group = results.blank_group()
 
     def level(name):
@@ -320,6 +369,44 @@ def combined_atlas():
     return pd.concat(frames) if len(frames) > 1 else frames[0]
 
 
+# The columns the web layer and ``dbsearch.search_npatlas`` read. The other
+# twenty-odd (reference lists, DOIs, InChI strings) are most of the table's
+# memory and are never looked at here.
+ATLAS_COLUMNS = (
+    'compound_name', 'compound_molecular_formula', 'compound_accurate_mass',
+    'compound_m_plus_h', 'compound_m_plus_na', 'compound_inchikey',
+    'compound_smiles', 'origin_type', 'genus', 'origin_species',
+    'source_database', 'synonyms',
+)
+
+_ATLAS = Memo(limit=1)
+
+
+def _atlas_key():
+    def stamp(path):
+        try:
+            stat = path.stat()
+            return (str(path), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return (str(path), None, None)
+    return (stamp(config.NPATLAS_PATH), stamp(config.NPATLAS_SUPPLEMENTAL_PATH))
+
+
+def shared_atlas():
+    """``combined_atlas`` cut down to ``ATLAS_COLUMNS`` and kept in memory.
+
+    Parsing the 33MB table took longer than everything else a match lookup
+    does put together, and it was parsed again for every feature clicked.
+    The frame is shared between requests: treat it as read-only (every caller
+    here selects rows into a new frame). A re-downloaded atlas has a new
+    mtime and is picked up on the next call.
+    """
+    def build():
+        atlas = combined_atlas()
+        return atlas[[name for name in ATLAS_COLUMNS if name in atlas.columns]].copy()
+    return _ATLAS.get(_atlas_key(), build)
+
+
 def load_atlas(kingdom='', genus='', taxon_level='', taxon=''):
     """Load NPAtlas, applying the same origin/genus narrowing the desktop
     applies in ``enumerate_inputs``, or the web's any-rank ``taxon``.
@@ -327,7 +414,7 @@ def load_atlas(kingdom='', genus='', taxon_level='', taxon=''):
     The >3-character test is the desktop's own guard: it treats a short value
     as "nothing selected" rather than a real filter.
     """
-    atlas = combined_atlas()
+    atlas = shared_atlas()
     taxon = str(taxon or '').strip()
     if taxon:
         return _narrow_by_taxon(atlas, str(taxon_level or '').lower(), taxon)
@@ -420,8 +507,9 @@ def _render_rdkit(smiles, size=(420, 320)):
     from rdkit.Chem.Draw import rdMolDraw2D
     from rdkit.Geometry import Point3D
 
+    from .hits import standardize
     RDLogger.DisableLog('rdApp.*')
-    molecule = Chem.MolFromSmiles(str(smiles))
+    molecule = standardize(Chem.MolFromSmiles(str(smiles)))
     if molecule is None:
         raise ValueError('unparseable SMILES')
     rdCoordGen.AddCoords(molecule)

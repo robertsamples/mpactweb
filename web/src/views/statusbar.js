@@ -15,7 +15,7 @@
 
 import { api } from '../api.js';
 import { store } from '../state.js';
-import { clear, el, num } from '../util.js';
+import { clear, el, num, settle } from '../util.js';
 
 const runId = () => (store.get('run') || {}).run_id;
 
@@ -68,14 +68,10 @@ export function createStatusBar() {
     }
   };
 
-  const refresh = async () => {
-    const compound = store.get('selectedFeature');
-    const id = runId();
-    const mine = ++token;
-    // Draw the id straight away, then fill in the numbers when they arrive --
-    // the bar should never lag behind the click.
-    render(null);
-    if (SAMPLE_VIEWS.has(store.get('view')) || !compound || !id) return;
+  // The numbers are fetched once the selection settles: a held arrow key in
+  // the feature table would otherwise request every row it passes.
+  const fill = settle(async (mine, id, compound) => {
+    if (mine !== token) return;
     try {
       const detail = await api.feature(id, compound);
       if (mine === token) render(detail);
@@ -83,6 +79,17 @@ export function createStatusBar() {
       /* Feature not in this run (e.g. after switching runs) -- the id alone
          is still the honest thing to show. */
     }
+  }, 140);
+
+  const refresh = () => {
+    const compound = store.get('selectedFeature');
+    const id = runId();
+    const mine = ++token;
+    // Draw the id straight away, then fill in the numbers when they arrive --
+    // the bar should never lag behind the click.
+    render(null);
+    if (SAMPLE_VIEWS.has(store.get('view')) || !compound || !id) return;
+    fill(mine, id, compound);
   };
 
   store.on(['selectedFeature', 'selectedSample', 'selectedSampleGroup', 'run', 'view'],

@@ -117,8 +117,10 @@ export function heatmap(surface, payload, context) {
     x: payload.columns.map((label, index) => index),
     y: payload.features.map((label, index) => index),
     colorscale: colorscale(payload.colorscheme),
-    colorbar: { title: 'Scaled\nabundance', titleside: 'right', thickness: 12, len: 0.72,
-                x: 1.01, tickfont: { size: 10 } },
+    // The title has to be an object: this Plotly ignores the bare-string
+    // form (and `titleside`), which left the colour bar with no label at all.
+    colorbar: { title: { text: 'Scaled abundance', side: 'right', font: { size: 11 } },
+                thickness: 12, len: 0.72, x: 1.01, tickfont: { size: 10 } },
     hovertemplate: '%{customdata}<extra></extra>',
     customdata: hoverText(payload),
     xaxis: 'x', yaxis: 'y',

@@ -10,6 +10,7 @@ count) so mistakes surface at upload time rather than three tabs later.
 """
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 import time
@@ -91,13 +92,25 @@ async def upload_file(
         session.remove_file(record.id)
         raise
 
-    record = session.update_file(record.id, size=written)
-    if kind == 'peaktable':
-        record = _normalized(session, record)
-
-    detail = inspection.inspect_file(session, record)
-    record = session.update_file(record.id, detail=detail, fmt=detail.get('format'))
+    # Off the event loop. Laying out and converting a large peak table takes
+    # seconds, and this route is async (it has to be, to stream the upload):
+    # done inline, every other request on the server -- status polls, plots,
+    # other people's uploads -- stopped until one person's file was inspected.
+    try:
+        record = await run_in_threadpool(_finish_upload, session, record, written)
+    except Exception:
+        session.remove_file(record.id)
+        raise
     return _as_out(record)
+
+
+def _finish_upload(session, record, size):
+    """Record an uploaded file's size, lay out an MS-DIAL export, inspect it."""
+    record = session.update_file(record.id, size=size)
+    if record.kind == 'peaktable':
+        record = _normalized(session, record)
+    detail = inspection.inspect_file(session, record)
+    return session.update_file(record.id, detail=detail, fmt=detail.get('format'))
 
 
 @router.delete('/{file_id}')
@@ -274,9 +287,15 @@ async def import_session(
                 detail=f'session file exceeds the '
                        f'{config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit')
 
+    # Unpickling, writing and inspecting the files is all blocking work; see
+    # upload_file for why it must not run on the event loop.
+    return await run_in_threadpool(_import_session, session, name, bytes(blob))
+
+
+def _import_session(session, name, blob):
     warnings = []
     try:
-        payload = mpctsession.load(bytes(blob))
+        payload = mpctsession.load(blob)
         settings = mpctsession.settings_from(payload['parameters'], warnings)
         files = mpctsession.input_files(payload, warnings)
     except mpctsession.SessionError as exc:

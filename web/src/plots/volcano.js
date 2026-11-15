@@ -47,6 +47,13 @@ function classified(payload, pqthresh, fcthresh) {
   return payload._classified;
 }
 
+/** The enriched / depleted / not-significant counts at these thresholds. */
+export function volcanoCounts(payload, options = {}) {
+  const { buckets } = classified(payload, options.pqthresh ?? payload.thresholds.pq,
+                                 options.fcthresh ?? payload.thresholds.fc);
+  return { up: buckets.up.length, down: buckets.down.length, ns: buckets.ns.length };
+}
+
 export function volcano(surface, payload, context, options = {}) {
   const pqthresh = options.pqthresh ?? payload.thresholds.pq;
   const fcthresh = options.fcthresh ?? payload.thresholds.fc;

@@ -100,3 +100,48 @@ def test_set_filter_requires_and_excludes():
     built = _build_filters({'groups': {'required': [], 'excluded': ['Blanks']}})
     assert list(built.values())[0].matches('A') and not list(built.values())[0].matches('A Blanks')
     assert _build_filters({'groups': {'required': [], 'excluded': []}}) == {}
+
+
+def test_precomputed_chemistry_matches_rdkit():
+    from app import config
+    from app.plotdata import feature
+    table = hits._precomputed()
+    if not table:
+        pytest.skip('npatlas_chemistry.tsv missing or stale; run build_hit_annotations.py --chemistry')
+    try:
+        atlas = feature.combined_atlas()
+    except FileNotFoundError:
+        pytest.skip('npatlas.tsv is not installed')
+    sample = atlas['compound_smiles'].dropna().sample(200, random_state=0)
+    checked = 0
+    for compound_id, smiles in sample.items():
+        entry = table.get(int(compound_id))
+        if entry is None or entry[0] != hits.smiles_hash(smiles):
+            continue
+        molecule = Chem.MolFromSmiles(smiles)
+        assert entry[2] == hits.conjugated_size(molecule)
+        assert set(entry[1]) == labels(smiles)
+        checked += 1
+    assert checked > 150
+
+
+@pytest.mark.parametrize('smiles, expected', [
+    ('CC(=O)N[C@@H](C)C(O)=NCC(O)=O', 'CC(=O)N[C@@H](C)C(=O)NCC(=O)O'),
+    ('O/C(=N/C(C)C)C', 'CC(=O)NC(C)C'),
+    ('OC1=NCCC1', 'O=C1CCCN1'),
+    ('c1ccc(O)nc1', 'Oc1ccccn1'),          # aromatic: left alone
+    ('CC(=O)O', 'CC(=O)O'),
+])
+def test_imidic_acids_become_amides(smiles, expected):
+    assert hits.canonical_smiles(smiles) == expected
+    before, after = Chem.MolFromSmiles(smiles), Chem.MolFromSmiles(expected)
+    assert Chem.MolToInchiKey(before) == Chem.MolToInchiKey(after)
+
+
+def test_an_amide_query_finds_a_peptide_drawn_as_an_imidic_acid():
+    class One(hits._Chemistry):
+        def __init__(self):
+            self.smiles = ['CC(O)=NC(C)C(O)=O']
+            self._init_chemistry()
+    query = hits.parse_query('CC(=O)NC')
+    assert One().substructure('amide', query, [0]).all()

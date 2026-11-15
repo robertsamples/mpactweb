@@ -15,9 +15,9 @@ import { registerView } from '../app.js';
 import { api } from '../api.js';
 import { store } from '../state.js';
 import { clear, el, num, select, toast, debounce } from '../util.js';
-import { message } from '../plots/base.js';
+import { message, plotlyReady } from '../plots/base.js';
 import { fc3d, massdefect, mzrt, quality } from '../plots/scatter.js';
-import { volcano as drawVolcano } from '../plots/volcano.js';
+import { volcano as drawVolcano, volcanoCounts } from '../plots/volcano.js';
 import { dendrogram as drawDendrogram, heatmap as drawHeatmap, samplecorr as drawSamplecorr } from '../plots/matrix.js';
 import { ordination as drawOrdination } from '../plots/ordination.js';
 import { cvplot, treemap, upset } from '../plots/review.js';
@@ -86,6 +86,7 @@ function restrictPayload(payload, ids) {
 function plotPanel(spec) {
   const state = { ...(spec.initial || {}) };
   let payload = null;
+  let loadedKey = null;     // run + options the payload was fetched for
 
   // Two bars, as the desktop has: the plot's own switcher bar across the top
   // of the graphing window (what is being plotted, and how), and matplotlib's
@@ -109,8 +110,13 @@ function plotPanel(spec) {
     if (!payload) return;
     try {
       const shown = spec.featureLevel ? restrictPayload(payload, tableIds()) : payload;
-      const info = spec.render(surface, shown, plotContext(), state);
-      if (spec.footer) clear(footer).append(spec.footer(shown, state, info) || el('span'));
+      // Caption first, so the plot is sized once instead of drawn and then
+      // squeezed by a caption arriving underneath it.
+      if (spec.footer) {
+        const info = spec.info ? spec.info(shown, state) : undefined;
+        clear(footer).append(spec.footer(shown, state, info) || el('span'));
+      }
+      spec.render(surface, shown, plotContext(), state);
     } catch (error) {
       console.error(error);
       message(surface, `Could not draw this plot: ${error.message}`, 'error');
@@ -127,24 +133,49 @@ function plotPanel(spec) {
     }
   };
 
-  const fetchAndDraw = async () => {
+  // Requests can overlap (a control changed twice, a run switched mid-load)
+  // and need not come back in the order they left. Only the newest one may
+  // draw: before this, ticking "Bootstrap support" and then unticking it drew
+  // the quick plain dendrogram first and then, seconds later, the bootstrap
+  // one over it -- under a checkbox that said it was off.
+  let requestToken = 0;
+  let pending = null;       // {key, promise} for the request in the air
+
+  const fetchAndDraw = () => {
     const id = runId();
-    if (!id) { message(surface, 'Run an analysis to see this plot.'); return; }
+    if (!id) { message(surface, 'Run an analysis to see this plot.'); return Promise.resolve(); }
+    const options = spec.options ? spec.options(state) : {};
+    const key = `${id}\u0000${JSON.stringify(options)}`;
+    // Asked again for exactly what is already on its way (a quick tab
+    // round-trip): wait for that one instead of sending a second.
+    if (pending && pending.key === key) return pending.promise;
+
+    const mine = ++requestToken;
     status.textContent = 'Loading…';
-    clear(footer);
-    try {
-      payload = await api.plot(id, spec.plot, spec.options ? spec.options(state) : {});
-      status.textContent = '';
-      buildToolbar();
-      redraw();
-      // A new figure: rebind the toolbar to it in full.
-      navbar.sync();
-    } catch (error) {
-      payload = null;
-      status.textContent = '';
-      message(surface, error.message, 'error');
-      navbar.sync();
-    }
+    let promise = null;
+    promise = (async () => {
+      try {
+        const [fetched] = await Promise.all([api.plot(id, spec.plot, options), plotlyReady()]);
+        if (mine !== requestToken) return;
+        payload = fetched;
+        loadedKey = key;
+        status.textContent = '';
+        buildToolbar();
+        redraw();
+        // A new figure: rebind the toolbar to it in full.
+        navbar.sync();
+      } catch (error) {
+        if (mine !== requestToken) return;
+        payload = null;
+        status.textContent = '';
+        message(surface, error.message, 'error');
+        navbar.sync();
+      } finally {
+        if (pending && pending.promise === promise) pending = null;
+      }
+    })();
+    pending = { key, promise };
+    return promise;
   };
 
   function buildToolbar() {
@@ -215,7 +246,15 @@ function plotPanel(spec) {
     try { Plotly.Plots.resize(surface); } catch { /* not drawn yet */ }
   };
 
-  return { node, load: fetchAndDraw, redraw, resize, surface,
+  /** Show the panel: refetch only if the run or the server-side options
+   *  changed since the last fetch, otherwise redraw what is there. */
+  const load = () => {
+    const key = `${runId()}\u0000${JSON.stringify(spec.options ? spec.options(state) : {})}`;
+    if (payload && key === loadedKey) { redraw(); return Promise.resolve(); }
+    return fetchAndDraw();
+  };
+
+  return { node, load, redraw, resize, surface,
            syncNav: navbar.syncEnabled,
            get payload() { return payload; } };
 }
@@ -299,17 +338,27 @@ function summaryPanel() {
   const surface = el('div');
   const node = el('div', { class: 'plot-panel scrolls' }, [surface]);
 
+  let shownFor = null;      // the run whose summary is on screen
+  let loadToken = 0;
+
   const load = async () => {
     const id = runId();
-    if (!id) return;
+    // Nothing in the summary changes after a run completes, so coming back
+    // to the tab shows what is already there instead of refetching it.
+    if (!id || id === shownFor) return;
+    const mine = ++loadToken;
+    shownFor = null;
     clear(surface).append(el('p', { class: 'muted', text: 'Loading…' }));
     let payload;
     try {
       payload = await api.plot(id, 'summary', {});
     } catch (error) {
+      if (mine !== loadToken) return;
       clear(surface).append(el('div', { class: 'notice error', text: error.message }));
       return;
     }
+    if (mine !== loadToken) return;
+    shownFor = id;
     clear(surface);
 
     const counts = payload.counts;
@@ -503,7 +552,13 @@ function multivariateView() {
         // NMDS of the biological replicates (technical replicates averaged)
         // first; both can be changed from the bar.
         initial: { method: 'NMDS', view: 'Scores', replicates: 'Biological Replicates' },
-        options: (state) => ({ ...state, selected_feature: store.get('selectedFeature') }),
+        // The selected feature only matters to the loadings (it is always
+        // included there). Sent with the scores as well, it made every
+        // feature selection look like a change of options, and the next
+        // visit to this tab re-requested an ordination that had not changed.
+        options: (state) => (state.view === 'Loadings'
+          ? { ...state, selected_feature: store.get('selectedFeature') }
+          : { ...state }),
         controls: (state, actions, payload) => [
           control('Method', select(payload ? payload.methods : [state.method], state.method,
                                    (value) => { state.method = value; actions.fetchAndDraw(); })),
@@ -573,6 +628,7 @@ function volcanoView() {
           return [box('p/q threshold', 'pqthresh', 0.01),
                   box('Fold-change threshold', 'fcthresh', 0.1)];
         },
+        info: (payload, state) => volcanoCounts(payload, state),
         render: (surface, payload, context, state) => drawVolcano(surface, payload, context, state),
         footer: (payload, state, counts) => el('div', {}, [
           payload.warning ? el('div', { class: 'notice warn', text: payload.warning }) : null,

@@ -32,6 +32,8 @@ const initial = () => ({
   selectedSample: null,
   selectedSampleGroup: null,   // biological group of the picked injection
   hitFilter: null,          // active Feature Info hit filter spec, or null
+  busy: null,               // a running search, shown in the run chip
+  msmsVersion: 0,           // bumped after each MS/MS search
   plotFilter: { active: false, run: null, ids: null },   // Feature Info rows, for plots
   view: 'files',
 });

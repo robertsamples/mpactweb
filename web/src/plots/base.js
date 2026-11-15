@@ -105,6 +105,34 @@ export function message(surface, text, kind = '') {
   surface._plotly = false;
 }
 
+/** Resolves once Plotly has loaded (or has definitely failed to).
+ *
+ *  index.html loads the library with an injected script, which does not hold
+ *  up the app's own modules. On a link straight to a plot, the plot's data
+ *  can therefore arrive before the 4 MB library has, and drawing at that
+ *  moment put "Plot library could not be loaded" on screen for a library
+ *  that was a second away. Callers wait on this before their first draw. */
+let plotlyWait = null;
+export function plotlyReady(timeout = 30000) {
+  const settled = () => typeof window.Plotly !== 'undefined' || window.__plotlyFailed;
+  if (settled()) return Promise.resolve();
+  if (!plotlyWait) {
+    plotlyWait = new Promise((resolve) => {
+      const started = performance.now();
+      const check = () => {
+        if (settled() || performance.now() - started > timeout) {
+          plotlyWait = null;
+          resolve();
+        } else {
+          setTimeout(check, 80);
+        }
+      };
+      check();
+    });
+  }
+  return plotlyWait;
+}
+
 export function ensurePlotly(surface) {
   if (typeof window.Plotly === 'undefined') {
     message(surface,

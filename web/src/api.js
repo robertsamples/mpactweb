@@ -163,6 +163,10 @@ export const api = {
     featureCache.clear();
     return json('POST', `/api/runs/${id}/dbsearch`, {});
   },
+  msmsSearch: (id, options) => json('POST', `/api/runs/${id}/msmssearch`, options),
+  msms: (id, compound, filter) =>
+    request(`/api/runs/${id}/feature/msms?compound=${encodeURIComponent(compound)}`
+            + (filter ? `&filter=${encodeURIComponent(JSON.stringify(filter))}` : '')),
   downloads: (id) => request(`/api/runs/${id}/downloads`),
   downloadUrl: (id, key) => `/api/runs/${id}/downloads/${key}`,
   downloadAllUrl: (id) => `/api/runs/${id}/downloads.zip`,

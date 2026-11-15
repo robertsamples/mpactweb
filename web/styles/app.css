@@ -585,10 +585,13 @@ table.features thead tr:nth-child(2) th {
 }
 table.features thead input, table.features thead select { width: 100%; padding: 2px 5px; font-size: 11px; }
 table.features .range-filter { display: flex; gap: 3px; }
-table.features .range-filter input { width: 50%; min-width: 0; }
+table.features .range-filter input { width: 50%; min-width: 0; padding: 2px 3px;
+  appearance: textfield; -moz-appearance: textfield; }
+table.features .range-filter input::-webkit-inner-spin-button,
+table.features .range-filter input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 /* Compound ids are long; the other columns are numbers and stay narrow. */
-table.features th:nth-child(1), table.features td:nth-child(1) { width: 22%; }
-table.features th:nth-child(5), table.features td:nth-child(5) { width: 22%; }
+table.features th:nth-child(1), table.features td:nth-child(1) { width: 20%; }
+table.features th:nth-child(5), table.features td:nth-child(5) { width: 18%; }
 
 /* Category (Sets) column filter: a button that opens a checkbox popup, the
    web form of the desktop's checkable-action menu. A multi-select listbox
@@ -633,6 +636,13 @@ table.features th:nth-child(5), table.features td:nth-child(5) { width: 22%; }
    highlighted hit, as the desktop's compound window shows them. */
 .matches-panel { display: flex; flex-direction: column; gap: 8px; }
 .match-nav { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.match-nav.with-toggle { justify-content: space-between; }
+.match-steps { display: flex; align-items: center; gap: 8px; }
+.source-toggle { display: flex; }
+.source-toggle .btn { border-radius: 0; }
+.source-toggle .btn:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.source-toggle .btn:last-child { border-radius: 0 var(--radius) var(--radius) 0; border-left: none; }
+.matches-body { display: flex; flex-direction: column; gap: 8px; }
 .match-nav .btn { padding: 1px 9px; line-height: 1.3; }
 .matches-panel .structure {
   background: #ffffff; border-radius: var(--radius); padding: 6px;
@@ -880,12 +890,24 @@ dialog.mapping:focus, dialog.mapping:focus-visible { outline: none; }
 
 /* --- Feature Info hit filters ------------------------------------------ */
 .table-pane > .plot-toolbar.hit-filters {
-  border-radius: 0; border-top: 1px solid var(--border); gap: 12px; flex-wrap: wrap;
+  border-radius: 0; border-top: 1px solid var(--border);
+  flex-direction: column; align-items: stretch; gap: 4px;
 }
+.hit-filters .hit-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.hit-filters .hit-row .spacer { flex: 1; }
+
+.hit-filters input.cosine-min { width: 58px; }
+.collapse-toggle {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 12px; padding: 0 2px; width: 16px;
+}
+.collapse-toggle:hover { color: var(--text); }
+.table-pane > .plot-toolbar .hit-row .btn { background: var(--control); color: var(--text);
+  border-color: #565656; padding: 2px 8px; font-size: 12px; }
 .hit-filters label, .hit-filters .hit-field {
   display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
 }
-.hit-filters input[type="text"], .hit-filters select {
+.hit-filters input[type="text"], .hit-filters input[type="number"], .hit-filters select {
   background: #1c1c1c; color: var(--text); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 2px 6px; font-size: 12px;
 }
@@ -906,7 +928,7 @@ dialog.mapping:focus, dialog.mapping:focus-visible { outline: none; }
 .taxon-picker .suggest { flex: 1; min-width: 0; }
 .field .taxon-picker .suggest input.taxon-input { width: 100%; }
 .suggest { position: relative; }
-.suggest input.taxon-input { width: 160px; }
+.suggest input.taxon-input { width: 120px; }
 .suggest.active input.taxon-input { border-color: var(--accent); }
 .suggest-menu { min-width: 260px; }
 .suggest-option { justify-content: space-between; gap: 14px; }

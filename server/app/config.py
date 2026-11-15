@@ -63,6 +63,15 @@ def _resolve():
                                SERVER_ROOT / 'data' / 'npatlas_taxonomy.tsv'),
         'SIDERITE_KEYS_PATH': _path('MPACT_SIDERITE_KEYS_PATH',
                                     SERVER_ROOT / 'data' / 'siderite_inchikeys.txt'),
+        'CHEMISTRY_PATH': _path('MPACT_CHEMISTRY_PATH',
+                                SERVER_ROOT / 'data' / 'npatlas_chemistry.tsv'),
+        # Compiled MS-DIAL MS/MS library (scripts/build_msms_library.py).
+        'MSMS_LIBRARY_PATH': Path(os.environ.get('MPACT_MSMS_LIBRARY_PATH',
+                                                 reference_dir / 'msdial_msms.npz')),
+        'MSMS_META_PATH': Path(os.environ.get('MPACT_MSMS_META_PATH',
+                                              reference_dir / 'msdial_msms_meta.tsv.gz')),
+        # Parse the atlas's structures at startup so substructure search is warm.
+        'PREWARM': _bool('MPACT_PREWARM', True),
 
         # The demo dataset ships *inside* the deployment, so it is resolved
         # separately from REFERENCE_DIR -- which in Docker is a mounted
@@ -85,6 +94,15 @@ def _resolve():
         # millions.
         'MAX_SCATTER_POINTS': _int('MPACT_MAX_SCATTER_POINTS', 200_000),
         'MAX_HEATMAP_CELLS': _int('MPACT_MAX_HEATMAP_CELLS', 2_000_000),
+
+        # In-memory caches (results.py, routers/results.py). The table
+        # cache holds parsed output CSVs; the plot cache holds finished plot
+        # payloads as JSON, so reopening a tab or reloading the page does not
+        # redo the clustering or the ordination behind it.
+        'CSV_CACHE_BYTES': _int('MPACT_CSV_CACHE_MB', 256) * 1024 * 1024,
+        'PLOT_CACHE_BYTES': _int('MPACT_PLOT_CACHE_MB', 64) * 1024 * 1024,
+        # Parsed fragment databases kept in memory, one per recently viewed run.
+        'FRAGDB_CACHE_ENTRIES': _int('MPACT_FRAGDB_CACHE_ENTRIES', 6),
 
         # SECURE should be on behind HTTPS.
         'SESSION_COOKIE_SECURE': _bool('MPACT_SESSION_COOKIE_SECURE', False),

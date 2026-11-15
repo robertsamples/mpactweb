@@ -7,7 +7,7 @@
 
 import { api } from './api.js';
 import { store } from './state.js';
-import { $, clear, el, toast } from './util.js';
+import { $, clear, el, settle, toast } from './util.js';
 import { makeSplitter } from './components.js';
 import { buildSetupViews } from './views/setup.js';
 import { buildResultViews } from './views/results.js';
@@ -18,9 +18,13 @@ import { detailsRail } from './views/detailsrail.js';
 import { dinoCrash, toggleDinoMenu } from './views/dino.js';
 
 const POLL_INTERVAL_MS = 1500;
+// Consecutive failed status polls tolerated before a run is reported lost:
+// with the backoff below, a little over a minute and a half.
+const POLL_MAX_FAILURES = 12;
 
 const views = new Map();     // id -> {id, label, group, requiresRun, node, onShow}
 let pollTimer = null;
+let pollToken = 0;           // bumped whenever the watched run changes
 
 // The one details rail, mounted beside the main region as the counterpart of
 // the navigation bar on the left. Views declare `rail: true` to have it; its
@@ -80,10 +84,12 @@ export function registerView(view) {
   $('#main').append(view.node);
 }
 
+/** Show a view. Returns false when it cannot be shown (an unknown id, or a
+ *  result view with no completed run behind it). */
 export function showView(id) {
   const view = views.get(id);
-  if (!view) return;
-  if (view.requiresRun && !isRunComplete()) return;
+  if (!view) return false;
+  if (view.requiresRun && !isRunComplete()) return false;
   for (const other of views.values()) other.node.classList.toggle('active', other === view);
   store.set({ view: id });
   renderNav();
@@ -96,6 +102,14 @@ export function showView(id) {
   const run = store.get('run');
   const hash = run && run.run_id ? `#${id}/${run.run_id}` : `#${id}`;
   if (window.location.hash !== hash) window.history.replaceState(null, '', hash);
+  return true;
+}
+
+/** Where to land when a result view has no completed run to show: the Run
+ *  view if there is a run to report on (in flight, failed, cancelled),
+ *  otherwise the start of the workflow. */
+function fallbackView() {
+  return store.get('run') ? 'run' : 'files';
 }
 
 export const isRunComplete = () => (store.get('run') || {}).state === 'complete';
@@ -153,6 +167,10 @@ function renderRunChip() {
     chip.classList.add('is-running');
     clear(chip).append(el('span', { class: 'spinner' }),
                        el('span', { text: `${label}${run.stage || run.state}` }));
+  } else if (run.state === 'complete' && store.get('busy')) {
+    chip.classList.add('is-running');
+    clear(chip).append(el('span', { class: 'spinner' }),
+                       el('span', { text: `${label}${store.get('busy')}` }));
   } else if (run.state === 'complete') {
     chip.classList.add('is-complete');
     chip.textContent = `${label}Analysis complete`;
@@ -164,23 +182,56 @@ function renderRunChip() {
   }
 }
 
+/** Put a polled status in the store, but only when something in it changed.
+ *
+ *  Every poll returns a fresh object, and the store notifies on identity. So
+ *  each 1.5 s tick used to count as "the run changed": the Run view tore
+ *  itself down and rebuilt, which blanked the log and threw away where you
+ *  had scrolled to in it, and the navigation and run chip were redrawn too. */
+function setRun(status) {
+  const current = store.get('run');
+  if (current && JSON.stringify(current) === JSON.stringify(status)) return;
+  store.set({ run: status });
+}
+
 /** Poll a run to completion, then load its result catalogue. */
 export function watchRun(runId) {
   clearTimeout(pollTimer);
+  // Cancelling the timer does not cancel a request already in the air; the
+  // token is what stops a superseded watch from writing its answer over the
+  // run that replaced it.
+  const mine = ++pollToken;
+  let failures = 0;
 
   const tick = async () => {
     let status;
     try {
       status = await api.runStatus(runId);
     } catch (error) {
+      if (mine !== pollToken) return;
+      failures += 1;
+      // One dropped request is not a lost analysis. The run carries on
+      // server-side whatever happens to this connection, so keep asking
+      // through a blip or a server restart, and only give up when the run is
+      // really gone (404) or the outage has lasted a while.
+      const gone = error.status === 404;
+      if (!gone && failures <= POLL_MAX_FAILURES) {
+        if (failures === 2) toast('Connection to the server lost; retrying…', 'info');
+        pollTimer = setTimeout(tick, Math.min(POLL_INTERVAL_MS * 2 ** (failures - 1), 10000));
+        return;
+      }
       store.set({ run: { run_id: runId, state: 'failed', error: error.message } });
       toast(`Lost track of the analysis: ${error.message}`, 'error');
       return;
     }
-    store.set({ run: status });
+    if (mine !== pollToken) return;
+    if (failures >= 2) toast('Reconnected', 'ok');
+    failures = 0;
+    setRun(status);
 
     if (status.state === 'complete') {
       await loadCatalogue(runId);
+      if (mine !== pollToken) return;
       toast('Analysis complete', 'ok');
       return;
     }
@@ -206,10 +257,24 @@ export async function loadCatalogue(runId) {
 /** Adopt an existing run (from the run list, or the URL) as the active one. */
 export async function selectRun(runId) {
   clearTimeout(pollTimer);
+  const mine = ++pollToken;
   const status = await api.runStatus(runId);
-  store.set({ run: status, selectedFeature: null, catalogue: null });
+  if (mine !== pollToken) return;
+  store.set({ run: status, selectedFeature: null, selectedSample: null,
+              selectedSampleGroup: null, catalogue: null });
+  if (status.state === 'running' || status.state === 'queued') {
+    // Not viewable yet; the store listener in boot() has already moved a
+    // result view over to Run, and the watch takes it from here.
+    watchRun(runId);
+    return;
+  }
   if (status.state === 'complete') await loadCatalogue(runId);
-  else if (status.state === 'running' || status.state === 'queued') watchRun(runId);
+  if (mine !== pollToken) return;
+  // The view on screen was drawn for the previous run. Views load when they
+  // are shown, so show it again -- otherwise opening another analysis from
+  // the run list left the old one's plot up until you changed tabs.
+  const current = store.get('view');
+  if (views.has(current) && !showView(current)) showView(fallbackView());
 }
 
 async function boot() {
@@ -243,9 +308,23 @@ async function boot() {
   buildSetupViews();
   buildResultViews();
   mountRail();
-  store.on('selectedFeature', () => { if (railWanted() && !rail.isCollapsed()) rail.render(); });
+  // Settled, not immediate: holding an arrow key in the feature table changes
+  // the selection thirty times a second, and each rail render is four or five
+  // requests. The first change still renders at once.
+  const renderRail = settle(() => {
+    if (railWanted() && !rail.isCollapsed()) rail.render();
+  }, 140);
+  store.on('selectedFeature', renderRail);
 
-  store.on(['run', 'catalogue'], () => { renderRunChip(); renderNav(); });
+  store.on(['run', 'catalogue'], () => {
+    renderRunChip();
+    renderNav();
+    // A result view with no completed run behind it (the run was deleted, or
+    // a new one was started from another tab) has nothing true left to show.
+    const current = views.get(store.get('view'));
+    if (current && current.requiresRun && !isRunComplete()) showView(fallbackView());
+  });
+  store.on('busy', renderRunChip);
   store.on('view', renderNav);
 
   $('#btn-runs').addEventListener('click', showRunsDialog);
@@ -270,7 +349,9 @@ async function boot() {
       toast('That analysis is no longer available on this server', 'info');
     }
   }
-  showView(views.has(viewId) ? viewId : 'files');
+  // A link to a result tab whose run is still going, failed, or is gone
+  // cannot open that tab; without a fallback nothing was shown at all.
+  if (!showView(views.has(viewId) ? viewId : 'files')) showView(fallbackView());
 }
 
 boot();

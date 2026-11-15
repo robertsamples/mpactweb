@@ -1,6 +1,6 @@
 """Results: plot data, the feature table, database search, and downloads."""
 
-import io
+import functools
 import json
 import zipfile
 from pathlib import Path
@@ -9,12 +9,69 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
-from .. import plotdata, storage
-from ..core import dbsearch, getfragdb
+from .. import config, plotdata
+from .. import results as resultstore
+from ..core import csvcache, dbsearch, getfragdb
 from ..deps import get_results, get_run
 from ..plotdata import feature as featuredata
 from ..plotdata import hits as hitdata
-from ..results import RunResults
+from ..plotdata import msms as msmsdata
+from ..results import Memo, RunResults
+
+
+def _json_default(value):
+    """numpy scalars and arrays a builder let through, as plain JSON."""
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f'{type(value).__name__} is not JSON serialisable')
+
+
+def to_json(payload):
+    """A payload as compact JSON bytes.
+
+    Plot and table payloads are lists of tens of thousands of numbers.
+    Returning the dict and letting FastAPI encode it walks every one of them
+    in Python first (``jsonable_encoder``) and only then serialises; going
+    straight to ``json.dumps`` is the same output for a fraction of the time.
+    ``allow_nan=False`` keeps the strictness that path had: a NaN a builder
+    failed to clean is an error here, not invalid JSON in the browser.
+    """
+    return json.dumps(payload, separators=(',', ':'), allow_nan=False,
+                      default=_json_default).encode('utf-8')
+
+
+def json_response(payload):
+    body = payload if isinstance(payload, bytes) else to_json(payload)
+    return Response(content=body, media_type='application/json')
+
+
+# Finished plot payloads, as the bytes that go on the wire. A payload is a
+# pure function of the run's output files and the request's options, so it is
+# keyed on both; a file rewritten in place (the database search rewrites
+# iondict.csv) changes the key. Reloading the page, coming back to a tab with
+# its earlier options, or opening a second window then costs a dictionary
+# lookup instead of another clustering or ordination.
+_PLOT_CACHE = Memo(limit=256, size_of=len, max_bytes=lambda: config.PLOT_CACHE_BYTES)
+
+
+def _run_stamp(results):
+    """Identity of everything a plot builder reads for this run."""
+    stamp = [str(results.outputdir)]
+    for path in (results.iondict_path, results.filtered_path, results.summary_path,
+                 results.groupaverages_path, results.outputdir / 'groupsets.json',
+                 results.outputdir / 'runmeta.json', results.run.root / 'params.json'):
+        try:
+            stat = path.stat()
+            stamp.append((stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            stamp.append(None)
+    return tuple(stamp)
 
 router = APIRouter(prefix='/api/runs/{run_id}', tags=['results'])
 
@@ -53,8 +110,18 @@ def plot_payload(name: str, options: dict | None = None,
         raise HTTPException(
             status_code=409,
             detail=f'"{spec.title}" needs {missing} enabled; re-run with it turned on')
+    options = options or {}
     try:
-        return plotdata.build(name, results, options or {})
+        key = (name, json.dumps(options, sort_keys=True, default=str),
+               config.PVCLUST_NBOOT, config.MAX_SCATTER_POINTS, config.MAX_HEATMAP_CELLS,
+               _run_stamp(results))
+    except (TypeError, ValueError):
+        key = None
+    try:
+        if key is None:
+            return json_response(plotdata.build(name, results, options))
+        return json_response(_PLOT_CACHE.get(
+            key, lambda: to_json(plotdata.build(name, results, options))))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -71,7 +138,7 @@ def feature_table(options: dict | None = None, run=Depends(get_run),
     try:
         table = featuredata.feature_table(results, options, ms2_ids=ms2)
         table['has_fragments'] = fragpath is not None
-        return table
+        return json_response(table)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -110,9 +177,19 @@ CompoundParam = Query(..., min_length=1, max_length=512, description='Feature (C
 @router.get('/feature')
 def feature_detail(compound: str = CompoundParam,
                    results: RunResults = Depends(get_results)):
+    return _detail(results, compound)
+
+
+def _detail(results, compound):
+    """A feature's fields, or a 404 for an id this run does not have.
+
+    Every per-feature route starts here. Left uncaught, the "not in this run"
+    error surfaced as a 500 on the routes that did not happen to catch it --
+    which is what a selection carried over from another run produced.
+    """
     try:
         return featuredata.feature_detail(results, compound)
-    except ValueError as exc:
+    except featuredata.UnknownFeature as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
@@ -151,6 +228,11 @@ def feature_spectrum(compound: str = CompoundParam, run=Depends(get_run),
     return featuredata.spectrum(results, fragdb, compound)
 
 
+def _file_stamp(path: Path):
+    stat = path.stat()
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
 def _fragment_path(run):
     request = run.read_request() or {}
     name = (request.get('inputs') or {}).get('fragments_name')
@@ -158,26 +240,24 @@ def _fragment_path(run):
     return path if path is not None and path.exists() else None
 
 
-_FRAGMENT_IDS = {}
+# Parsed fragment databases and the ids that have a spectrum in each, for the
+# runs most recently looked at. These held a single entry, which is right for
+# one person and wrong for a room: with two people clicking through different
+# runs, every click evicted the other's database and re-parsed its own.
+_FRAGDB_CACHE = Memo(limit=6)
+_FRAGMENT_IDS = Memo(limit=32)
 
 
 def _fragment_ids(path: Path):
     """Compound ids with a non-empty spectrum in the fragment database."""
-    key = (str(path), path.stat().st_mtime_ns)
-    ids = _FRAGMENT_IDS.get(key)
-    if ids is None:
-        fragdb = _load_fragdb(path)
+    def build():
         ids = set()
-        for compound, entry in getattr(fragdb, 'ions', {}).items():
+        for compound, entry in getattr(_load_fragdb(path), 'ions', {}).items():
             pattern = np.asarray(getattr(entry, 'pattern', []), dtype=float)
             if pattern.ndim == 2 and pattern.shape[0] > 0:
                 ids.add(str(compound))
-        _FRAGMENT_IDS.clear()
-        _FRAGMENT_IDS[key] = ids
-    return ids
-
-
-_FRAGDB_CACHE = {}
+        return frozenset(ids)
+    return _FRAGMENT_IDS.get(_file_stamp(path), build)
 
 
 def _load_fragdb(path: Path):
@@ -185,14 +265,11 @@ def _load_fragdb(path: Path):
 
     Parsing an MSP is slow enough that re-doing it on every feature click is
     noticeable, and a run's fragment file never changes after the run starts.
+    Two requests for the same database share one parse.
     """
-    key = (str(path), path.stat().st_mtime_ns)
-    cached = _FRAGDB_CACHE.get(key)
-    if cached is None:
-        cached = getfragdb.importfrag(str(path))
-        _FRAGDB_CACHE.clear()      # one run's database at a time is plenty
-        _FRAGDB_CACHE[key] = cached
-    return cached
+    _FRAGDB_CACHE.limit = max(1, config.FRAGDB_CACHE_ENTRIES)
+    return _FRAGDB_CACHE.get(_file_stamp(path),
+                             lambda: getfragdb.importfrag(str(path)))
 
 
 @router.get('/feature/matches')
@@ -207,7 +284,7 @@ def feature_matches(compound: str = CompoundParam,
         spec = hitdata.normalise(json.loads(filter)) if filter else None
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    detail = featuredata.feature_detail(results, compound)
+    detail = _detail(results, compound)
     mass = detail['fields'].get('m/z')
     if mass is None:
         raise HTTPException(status_code=422, detail=f'{compound} has no m/z')
@@ -216,6 +293,8 @@ def feature_matches(compound: str = CompoundParam,
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     matches = featuredata.matches_for_mass(atlas, mass, params.get('ppmthresh', 10))
+    for match in matches:
+        match['compound_smiles'] = hitdata.canonical_smiles(match.get('compound_smiles'))
     try:
         matches = hitdata.annotate_matches(params, matches, spec)
     except ValueError as exc:
@@ -252,8 +331,20 @@ def run_database_search(results: RunResults = Depends(get_results)):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    hitdb, _ = dbsearch.search_npatlas(
-        results.outputdir, results.stem, atlas, float(params.get('ppmthresh', 10)))
+    # The search rewrites iondict.csv in place. Held exclusively so that a
+    # second search of the same run (the automatic one on first opening
+    # Feature Info and a click on the button can overlap) queues behind this
+    # one instead of interleaving two writes of the same file, and so that a
+    # table refresh waits for the rewrite rather than parsing half of it.
+    with resultstore.exclusive(results.iondict_path):
+        try:
+            hitdb, _ = dbsearch.search_npatlas(
+                results.outputdir, results.stem, atlas, float(params.get('ppmthresh', 10)))
+        finally:
+            # The vendored search memoises its reads by path alone and only
+            # drops them on success; after a failure the next search would
+            # start from the stale copies.
+            csvcache.invalidate()
     # iondict.csv changed on disk; the results cache is mtime-keyed, so the
     # next read picks it up without an explicit invalidation.
     return {
@@ -267,11 +358,57 @@ def run_database_search(results: RunResults = Depends(get_results)):
     }
 
 
+@router.post('/msmssearch')
+def run_msms_search(options: dict | None = None, run=Depends(get_run),
+                    results: RunResults = Depends(get_results)):
+    """MS/MS search of every filtered feature's spectrum against the
+    MS-DIAL library. ``min_score`` (cosine) and ``match_precursor``."""
+    options = options or {}
+    fragpath = _fragment_path(run)
+    if fragpath is None:
+        raise HTTPException(status_code=404, detail='no fragment database was supplied for this run')
+    try:
+        min_score = float(options.get('min_score', msmsdata.DEFAULT_MIN_SCORE))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail='min_score must be a number') from exc
+    if not 0 < min_score <= 1:
+        raise HTTPException(status_code=422, detail='min_score must be between 0 and 1')
+    try:
+        # One search of a run at a time; a second request waits its turn.
+        with resultstore.exclusive(results.outputdir / msmsdata.RESULTS_FILE):
+            record = msmsdata.search(results, _load_fragdb(fragpath), min_score,
+                                     bool(options.get('match_precursor', True)))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {'searched': record['searched'],
+            'matched': sum(1 for found in record['hits'].values() if found),
+            'min_score': record['min_score'], 'match_precursor': record['match_precursor']}
+
+
+@router.get('/feature/msms')
+def feature_msms(compound: str = CompoundParam,
+                 filter: str = Query('', max_length=4000),
+                 results: RunResults = Depends(get_results)):
+    """A feature's MS/MS library matches from the run's last MS/MS search.
+    ``filter`` is an optional JSON hit-filter spec; each match then carries
+    ``passes``."""
+    detail = _detail(results, compound)
+    try:
+        spec = hitdata.normalise(json.loads(filter)) if filter else None
+        payload = msmsdata.matches(results, compound, detail['fields'].get('m/z'))
+        hitdata.annotate_library_matches(payload['matches'], spec)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return payload
+
+
 @router.get('/structure')
 def structure(smiles: str = Query(..., min_length=1, max_length=2000)):
     """2D structure SVG for a SMILES string (epam.indigo, when installed)."""
     try:
-        svg = featuredata.render_structure(smiles)
+        svg = _structure_svg(smiles)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - an unparseable SMILES is user input
@@ -279,6 +416,15 @@ def structure(smiles: str = Query(..., min_length=1, max_length=2000)):
                             detail=f'could not render structure: {exc}') from exc
     return Response(content=svg, media_type='image/svg+xml',
                     headers={'Cache-Control': 'public, max-age=86400'})
+
+
+@functools.lru_cache(maxsize=512)
+def _structure_svg(smiles):
+    """Rendered structures, kept: laying out a macrocycle takes a noticeable
+    fraction of a second, and the same handful of matches is drawn again each
+    time someone steps back through a feature's hit list. (A failed render
+    raises and is not cached.)"""
+    return featuredata.render_structure(smiles)
 
 
 # Downloadable outputs, keyed by the suffix the pipeline writes. Mirrors the
@@ -341,14 +487,60 @@ def download_all(results: RunResults = Depends(get_results)):
         if path is not None and path.exists():
             paths.append(path)
 
-    def generate():
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for path in paths:
-                archive.write(path, arcname=path.name)
-        buffer.seek(0)
-        yield from buffer
-
     return StreamingResponse(
-        generate(), media_type='application/zip',
-        headers={'Content-Disposition': f'attachment; filename="{results.stem}_mpact.zip"'})
+        _zip_stream(paths), media_type='application/zip',
+        headers={'Content-Disposition': f'attachment; filename="{results.stem}_mpact.zip"',
+                 # Already compressed. Declaring an encoding is what makes the
+                 # gzip middleware leave the stream alone; without it the
+                 # archive was deflated a second time on its way out, which
+                 # cost more than building it and saved nothing.
+                 'Content-Encoding': 'identity'})
+
+
+class _ZipSink:
+    """Write-only target for ``ZipFile`` that hands back what was written.
+
+    It has no ``tell``/``seek``, which is how ``zipfile`` knows to write a
+    forward-only archive (sizes in a trailing data descriptor)."""
+
+    def __init__(self):
+        self._chunks = []
+
+    def write(self, data):
+        self._chunks.append(bytes(data))
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def drain(self):
+        chunks, self._chunks = self._chunks, []
+        return chunks
+
+
+# Faster than the default level 6 for an archive only slightly larger.
+_ZIP_LEVEL = 3
+
+
+def _zip_stream(paths):
+    """The archive, yielded as it is built.
+
+    The whole thing used to be assembled in memory before the first byte was
+    sent: the download sat silent for as long as compression took, and a
+    large run's outputs were held in RAM once per person downloading.
+    """
+    sink = _ZipSink()
+    with zipfile.ZipFile(sink, 'w', zipfile.ZIP_DEFLATED, compresslevel=_ZIP_LEVEL) as archive:
+        for path in paths:
+            try:
+                source = open(path, 'rb')
+            except OSError:
+                continue        # deleted since it was listed
+            # ZIP64 only where a file needs it: some unzip tools still stumble on it.
+            big = path.stat().st_size > 2 ** 31
+            with source, archive.open(path.name, 'w', force_zip64=big) as entry:
+                while chunk := source.read(1 << 20):
+                    entry.write(chunk)
+                    yield from sink.drain()
+            yield from sink.drain()
+    yield from sink.drain()

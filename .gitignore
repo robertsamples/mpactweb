@@ -9,7 +9,9 @@ server/data/*.tsv
 # ...except the supplemental table, which is curated here and ships with the code.
 !server/data/npatlas_supplemental.tsv
 !server/data/npatlas_taxonomy.tsv
+!server/data/npatlas_chemistry.tsv
 server/data/*.db
+server/data/msdial_msms*
 
 # --- vendored browser libraries -----------------------------------------
 # Plotly is loaded from a CDN by default; scripts/fetch_web_vendor.py drops a

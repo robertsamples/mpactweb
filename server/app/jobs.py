@@ -15,6 +15,7 @@ import asyncio
 import multiprocessing
 import os
 import time
+import traceback
 from pathlib import Path
 
 from . import config, storage
@@ -38,6 +39,25 @@ def _child_entry(session_id, run_id, log_path, env):
     raise SystemExit(child_main(session_id, run_id, log_path))
 
 
+def _stop(process, grace=5.0):
+    """Terminate an analysis process and wait for it; kill it if it stays.
+
+    Blocking, so call it from a worker thread. The escalation matters on
+    POSIX, where ``terminate`` is a SIGTERM a process deep in native code can
+    sit on: a cancelled run that kept computing held its concurrency slot's
+    worth of CPU while the queue showed it gone.
+    """
+    try:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=grace)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=grace)
+    except Exception:  # noqa: BLE001 - already gone, or never started
+        traceback.print_exc()
+
+
 class AlreadyActive(Exception):
     """The session already has a run queued or running."""
 
@@ -52,6 +72,7 @@ class JobManager:
     def __init__(self):
         self._queue = []                 # [(session_id, run_id)] awaiting a slot
         self._running = {}               # run_id -> (process, session_id, started)
+        self._stopping = []              # timed-out processes not yet confirmed dead
         self._lock = asyncio.Lock()
         self._pump_task = None
         self._context = multiprocessing.get_context('spawn')
@@ -106,16 +127,20 @@ class JobManager:
             active = self.active_for(session.id)
             if active is not None:
                 raise AlreadyActive(active)
+            # Before the job is visible to the scheduler, not after: the
+            # background pass can start it the moment it is queued, and a
+            # "queued" written after the analysis process's own "running"
+            # left the run reading as queued for its whole life.
+            run.write_status({
+                'run_id': run.id,
+                'state': 'queued',
+                'stage': 'queued',
+                'started_at': None,
+                'finished_at': None,
+                'error': None,
+                'warnings': [],
+            })
             self._queue.append((session.id, run.id))
-        run.write_status({
-            'run_id': run.id,
-            'state': 'queued',
-            'stage': 'queued',
-            'started_at': None,
-            'finished_at': None,
-            'error': None,
-            'warnings': [],
-        })
         self.start()
         await self._pump()
         return run.id
@@ -126,10 +151,9 @@ class JobManager:
             self._queue = [item for item in self._queue if item[1] != run.id]
             entry = self._running.pop(run.id, None)
         if entry is not None:
-            process = entry[0]
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=5)
+            # Off the event loop: waiting for the process to go can take
+            # seconds, and every other request would wait with it.
+            await asyncio.to_thread(_stop, entry[0])
         status = run.read_status() or {'run_id': run.id}
         if status.get('state') in ('queued', 'running'):
             status.update(state='cancelled', stage='cancelled', finished_at=time.time())
@@ -142,7 +166,15 @@ class JobManager:
     async def _pump_forever(self):
         while True:
             await asyncio.sleep(1.0)
-            await self._pump()
+            try:
+                await self._pump()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one bad pass must not end scheduling
+                # Without this a single failed status write (a full disk, a
+                # session deleted under a running job) ended the loop, and
+                # nothing was reaped or started again until the next submit.
+                traceback.print_exc()
 
     async def _pump(self):
         """Reap finished processes, then start as many queued jobs as fit."""
@@ -151,11 +183,21 @@ class JobManager:
                 if process.is_alive():
                     continue
                 self._running.pop(run_id, None)
-                self._reconcile_exit(session_id, run_id, process.exitcode)
+                try:
+                    self._reconcile_exit(session_id, run_id, process.exitcode)
+                except Exception:  # noqa: BLE001 - the run directory may be gone
+                    traceback.print_exc()
 
             while self._queue and len(self._running) < config.MAX_CONCURRENT_JOBS:
                 session_id, run_id = self._queue.pop(0)
-                self._spawn(session_id, run_id)
+                try:
+                    self._spawn(session_id, run_id)
+                except Exception as exc:  # noqa: BLE001
+                    # The job has left the queue, so nothing would ever report
+                    # on it again: say why it never started.
+                    traceback.print_exc()
+                    self._fail(session_id, run_id, 'failed',
+                               f'the analysis process could not be started: {exc}')
 
             # Time out a job that has overrun its budget.
             now = time.time()
@@ -163,12 +205,27 @@ class JobManager:
                 if now - started > config.JOB_TIMEOUT_SECONDS and process.is_alive():
                     process.terminate()
                     self._running.pop(run_id, None)
-                    run = storage.Run(storage.Session(session_id), run_id)
-                    status = run.read_status() or {'run_id': run_id}
-                    status.update(state='failed', stage='timed out',
-                                  error=f'exceeded {config.JOB_TIMEOUT_SECONDS}s time limit',
-                                  finished_at=now)
-                    run.write_status(status)
+                    self._stopping.append(process)
+                    self._fail(session_id, run_id, 'timed out',
+                               f'exceeded {config.JOB_TIMEOUT_SECONDS}s time limit')
+
+            # A terminated process that is still there a pass later did not
+            # take the hint.
+            for process in list(self._stopping):
+                if process.is_alive():
+                    process.kill()
+                else:
+                    self._stopping.remove(process)
+
+    def _fail(self, session_id, run_id, stage, error):
+        """Record a terminal failure the analysis process could not write."""
+        try:
+            run = storage.Run(storage.Session(session_id), run_id)
+            status = run.read_status() or {'run_id': run_id}
+            status.update(state='failed', stage=stage, error=error, finished_at=time.time())
+            run.write_status(status)
+        except Exception:  # noqa: BLE001 - e.g. the run was deleted meanwhile
+            traceback.print_exc()
 
     def _spawn(self, session_id, run_id):
         session = storage.Session(session_id)

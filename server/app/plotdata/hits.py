@@ -6,6 +6,9 @@ Atlas annotations are built once per atlas; the feature -> hit index once per
 run; RDKit work only ever touches compounds that are hits, and is memoised.
 """
 
+import functools
+import hashlib
+import itertools
 import threading
 
 import numpy as np
@@ -65,6 +68,94 @@ def _patterns():
     return _PATTERNS
 
 
+_IMIDIC_ACID = None
+
+
+def standardize(molecule):
+    """Imidic acids drawn as such (-C(OH)=N-, common for peptides in the
+    libraries) rewritten as the amides they are, including non-aromatic
+    lactims. Stereocentres are kept; the InChIKey does not change."""
+    global _IMIDIC_ACID
+    if molecule is None:
+        return None
+    Chem = _rdkit()
+    if _IMIDIC_ACID is None:
+        _IMIDIC_ACID = Chem.MolFromSmarts('[NX2;!a]=[CX3;!a]-[OX2H1]')
+    if not molecule.HasSubstructMatch(_IMIDIC_ACID):
+        return molecule
+    editable = Chem.RWMol(molecule)
+    for _ in range(500):
+        found = editable.GetSubstructMatches(_IMIDIC_ACID, maxMatches=1)
+        if not found:
+            break
+        n, c, o = found[0]
+        bond = editable.GetBondBetweenAtoms(n, c)
+        bond.SetBondType(Chem.BondType.SINGLE)
+        bond.SetStereo(Chem.BondStereo.STEREONONE)
+        editable.GetBondBetweenAtoms(c, o).SetBondType(Chem.BondType.DOUBLE)
+        for index in (n, c):
+            for neighbour in editable.GetAtomWithIdx(index).GetBonds():
+                neighbour.SetBondDir(Chem.BondDir.NONE)
+        for index in (n, o):
+            atom = editable.GetAtomWithIdx(index)
+            atom.SetNumExplicitHs(0)
+            atom.SetNoImplicit(False)
+        Chem.SanitizeMol(editable)
+    out = editable.GetMol()
+    Chem.AssignStereochemistry(out, cleanIt=True, force=True)
+    return out
+
+
+@functools.lru_cache(maxsize=20000)
+def canonical_smiles(smiles):
+    """Canonical SMILES of the standardized structure; the input if RDKit
+    is unavailable or cannot read it."""
+    if not smiles:
+        return smiles
+    try:
+        Chem = _rdkit()
+    except ValueError:
+        return smiles
+    molecule = Chem.MolFromSmiles(str(smiles))
+    if molecule is None:
+        return smiles
+    return Chem.MolToSmiles(standardize(molecule))
+
+
+def chemistry_signature():
+    """Changes whenever the warhead patterns, the conjugation rule or the
+    structure standardization do, so a precomputed table built from older
+    rules is ignored."""
+    return hashlib.sha1((repr(WARHEADS) + 'conjugated-pi-v1-amide').encode()).hexdigest()[:12]
+
+
+def smiles_hash(smiles):
+    return hashlib.sha1(str(smiles).encode()).hexdigest()[:10]
+
+
+_PRECOMPUTED = {}
+
+
+def _precomputed():
+    """{compound_id: (smiles hash, labels, conjugated)} from
+    npatlas_chemistry.tsv, or {} if it is missing or stale."""
+    path = config.CHEMISTRY_PATH
+    key = _mtime(path)
+    if key not in _PRECOMPUTED:
+        _PRECOMPUTED.clear()
+        table = {}
+        if key is not None:
+            with open(path, encoding='utf-8') as handle:
+                if handle.readline().strip() == f'# {chemistry_signature()}':
+                    handle.readline()
+                    for line in handle:
+                        compound_id, digest, labels, conjugated = line.rstrip('\n').split('\t')
+                        table[int(compound_id)] = (digest, tuple(filter(None, labels.split('|'))),
+                                                   int(conjugated))
+        _PRECOMPUTED[key] = table
+    return _PRECOMPUTED[key]
+
+
 def _mtime(path):
     try:
         return path.stat().st_mtime_ns
@@ -72,65 +163,22 @@ def _mtime(path):
         return None
 
 
-class Reference:
-    """The run-narrowed atlas as flat arrays, plus memoised chemistry."""
+class _Chemistry:
+    """Memoised RDKit work over ``self.smiles``, by position."""
 
-    def __init__(self, params):
-        atlas = featuredata.atlas_for(params).reset_index()
-        self.size = len(atlas)
-        self.compound_id = atlas['compound_id'].to_numpy()
-        self.mph = atlas['compound_m_plus_h'].to_numpy(dtype=float)
-        self.mna = atlas['compound_m_plus_na'].to_numpy(dtype=float)
-        self.order_h = np.argsort(self.mph, kind='stable')
-        self.sorted_h = self.mph[self.order_h]
-        self.order_na = np.argsort(self.mna, kind='stable')
-        self.sorted_na = self.mna[self.order_na]
-        self.smiles = atlas['compound_smiles'].fillna('').astype(str).to_numpy()
+    taxa_lower = None
 
-        names = atlas['compound_name'].fillna('').astype(str)
-        if 'synonyms' in atlas:
-            names = names + '\n' + atlas['synonyms'].fillna('').astype(str)
-        self.names = names.str.lower()
-
-        genus_col = atlas['genus'].fillna('').astype(str)
-        origin = atlas['origin_type'].fillna('').astype(str)
-        taxa = {'kingdom': origin, 'genus': genus_col,
-                'species': (genus_col + ' ' + atlas['origin_species'].fillna('').astype(str)).str.strip()}
-        lineage = _lineage()
-        keyed = pd.DataFrame({'origin_type': origin, 'genus': genus_col})
-        if lineage is not None:
-            keyed = keyed.merge(lineage, on=['origin_type', 'genus'], how='left')
-        for level in ('phylum', 'class', 'order', 'family'):
-            values = keyed[level] if level in keyed else pd.Series([''] * self.size)
-            taxa[level] = values.fillna('').astype(str).reset_index(drop=True)
-        self.taxa = {level: taxa[level].reset_index(drop=True) for level in TAXON_LEVELS}
-        self.taxa_lower = {level: series.str.lower() for level, series in self.taxa.items()}
-
-        sources = atlas['source_database'].fillna('').astype(str) \
-            if 'source_database' in atlas else pd.Series([''] * self.size)
-        blocks = atlas['compound_inchikey'].fillna('').astype(str).str.split('-').str[0]
-        self.siderophore = (blocks.isin(_siderite_keys()) | (sources == 'SIDERITE')).to_numpy()
-
-        self._positions = None
+    def _init_chemistry(self):
         self._binary = {}
         self._chem = {}
         self._substructure = {}
-
-    def position_of(self, compound_id):
-        if self._positions is None:
-            self._positions = {}
-            for position, value in enumerate(self.compound_id):
-                self._positions.setdefault(int(value), position)
-        try:
-            return self._positions.get(int(compound_id))
-        except (TypeError, ValueError):
-            return None
 
     def mol(self, position):
         Chem = _rdkit()
         binary = self._binary.get(position)
         if binary is None:
-            molecule = Chem.MolFromSmiles(self.smiles[position]) if self.smiles[position] else None
+            molecule = (standardize(Chem.MolFromSmiles(self.smiles[position]))
+                        if self.smiles[position] else None)
             binary = molecule.ToBinary() if molecule is not None else b''
             self._binary[position] = binary
             return molecule
@@ -167,6 +215,103 @@ class Reference:
                                             and molecule.HasSubstructMatch(query))
             out[i] = hit
         return out
+
+
+class LibraryAnnotations(_Chemistry):
+    """The MS/MS library's entries, for the same hit criteria. It records no
+    source organism, so no entry meets a taxon criterion."""
+
+    def __init__(self, meta):
+        self.size = len(meta)
+        self.smiles = meta['smiles'].to_numpy()
+        self.names = meta['name'].str.lower()
+        self.siderophore = meta['block'].isin(_siderite_keys()).to_numpy()
+        self._init_chemistry()
+
+
+_LIBRARY_ANNOTATIONS = {}
+
+
+def library_annotations():
+    """Annotations for the installed MS/MS library, or None."""
+    from . import msms
+    if not msms.available():
+        return None
+    lib = msms.library()
+    with _LOCK:
+        cached = _LIBRARY_ANNOTATIONS.get(lib.signature)
+        if cached is None:
+            _LIBRARY_ANNOTATIONS.clear()
+            cached = _LIBRARY_ANNOTATIONS[lib.signature] = LibraryAnnotations(lib.meta)
+    return cached
+
+
+_SERIALS = itertools.count(1)
+
+
+class Reference(_Chemistry):
+    """The run-narrowed atlas as flat arrays, plus memoised chemistry."""
+
+    def __init__(self, params):
+        # Identifies this object in cache keys. ``id()`` did that job, but an
+        # id is only unique among objects alive at the same time: once a
+        # Reference was evicted, the next one built could be handed the same
+        # address, and a hit index computed against the old narrowing would
+        # then be served for the new one.
+        self.serial = next(_SERIALS)
+        atlas = featuredata.atlas_for(params).reset_index()
+        self.size = len(atlas)
+        self.compound_id = atlas['compound_id'].to_numpy()
+        self.mph = atlas['compound_m_plus_h'].to_numpy(dtype=float)
+        self.mna = atlas['compound_m_plus_na'].to_numpy(dtype=float)
+        self.order_h = np.argsort(self.mph, kind='stable')
+        self.sorted_h = self.mph[self.order_h]
+        self.order_na = np.argsort(self.mna, kind='stable')
+        self.sorted_na = self.mna[self.order_na]
+        self.smiles = atlas['compound_smiles'].fillna('').astype(str).to_numpy()
+
+        names = atlas['compound_name'].fillna('').astype(str)
+        if 'synonyms' in atlas:
+            names = names + '\n' + atlas['synonyms'].fillna('').astype(str)
+        self.names = names.str.lower()
+
+        genus_col = atlas['genus'].fillna('').astype(str)
+        origin = atlas['origin_type'].fillna('').astype(str)
+        taxa = {'kingdom': origin, 'genus': genus_col,
+                'species': (genus_col + ' ' + atlas['origin_species'].fillna('').astype(str)).str.strip()}
+        lineage = _lineage()
+        keyed = pd.DataFrame({'origin_type': origin, 'genus': genus_col})
+        if lineage is not None:
+            keyed = keyed.merge(lineage, on=['origin_type', 'genus'], how='left')
+        for level in ('phylum', 'class', 'order', 'family'):
+            values = keyed[level] if level in keyed else pd.Series([''] * self.size)
+            taxa[level] = values.fillna('').astype(str).reset_index(drop=True)
+        self.taxa = {level: taxa[level].reset_index(drop=True) for level in TAXON_LEVELS}
+        self.taxa_lower = {level: series.str.lower() for level, series in self.taxa.items()}
+
+        sources = atlas['source_database'].fillna('').astype(str) \
+            if 'source_database' in atlas else pd.Series([''] * self.size)
+        blocks = atlas['compound_inchikey'].fillna('').astype(str).str.split('-').str[0]
+        self.siderophore = (blocks.isin(_siderite_keys()) | (sources == 'SIDERITE')).to_numpy()
+
+        self._positions = None
+        self._init_chemistry()
+        precomputed = _precomputed()
+        if precomputed:
+            for position, (compound_id, smiles) in enumerate(zip(self.compound_id, self.smiles)):
+                entry = precomputed.get(int(compound_id))
+                if entry is not None and entry[0] == smiles_hash(smiles):
+                    self._chem[position] = (entry[1], entry[2])
+
+    def position_of(self, compound_id):
+        if self._positions is None:
+            self._positions = {}
+            for position, value in enumerate(self.compound_id):
+                self._positions.setdefault(int(value), position)
+        try:
+            return self._positions.get(int(compound_id))
+        except (TypeError, ValueError):
+            return None
 
 
 def conjugated_size(molecule):
@@ -243,13 +388,13 @@ def hit_index(results, ref):
     """{compound: atlas positions within the run's ppm window}."""
     params = results.params()
     ppm = float(params.get('ppmthresh', 10))
-    key = (str(results.iondict_path), _mtime(results.iondict_path), ppm, id(ref))
+    key = (str(results.iondict_path), _mtime(results.iondict_path), ppm, ref.serial)
     with _LOCK:
         cached = _INDEXES.get(key)
     if cached is not None:
         return cached
 
-    iondict = results.iondict()
+    iondict = results.iondict(copy=False)
     masses = pd.to_numeric(iondict['m/z'], errors='coerce').to_numpy(dtype=float)
     compounds = iondict['Compound'].astype(str).to_numpy()
     t = ppm / 1e6
@@ -281,9 +426,51 @@ def hit_index(results, ref):
             _INDEXES.pop(next(iter(_INDEXES)))
         _INDEXES[key] = index
     if index:
-        candidates = np.unique(np.concatenate(list(index.values())))
-        threading.Thread(target=_warm, args=(ref, candidates), daemon=True).start()
+        try:
+            surviving = results.surviving()
+        except Exception:  # noqa: BLE001 - only an ordering hint
+            surviving = frozenset()
+        first = [p for c, p in index.items() if c in surviving]
+        rest = [p for c, p in index.items() if c not in surviving]
+        first = np.unique(np.concatenate(first)) if first else np.array([], dtype=int)
+        rest = np.setdiff1d(np.unique(np.concatenate(rest)), first) if rest else np.array([], dtype=int)
+        threading.Thread(target=_warm, args=(ref, np.concatenate([first, rest])),
+                         daemon=True).start()
     return index
+
+
+def prewarm():
+    """Parse the whole unnarrowed atlas in the background, once per process."""
+    def work():
+        try:
+            ref = reference({})
+            _warm(ref, range(ref.size))
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+    threading.Thread(target=work, daemon=True, name='hits-prewarm').start()
+
+
+_PREPARED = set()
+
+
+def prepare(results):
+    """Build a run's hit index in the background, ahead of the first filter."""
+    key = (str(results.iondict_path), _mtime(results.iondict_path))
+    with _LOCK:
+        if key in _PREPARED:
+            return
+        if len(_PREPARED) > 512:
+            # Only a "seen it" marker, but one per run ever opened otherwise.
+            _PREPARED.clear()
+        _PREPARED.add(key)
+
+    def work():
+        try:
+            hit_index(results, reference(results.params()))
+        except Exception:  # noqa: BLE001 - best effort
+            with _LOCK:
+                _PREPARED.discard(key)
+    threading.Thread(target=work, daemon=True).start()
 
 
 def _warm(ref, positions):
@@ -291,6 +478,7 @@ def _warm(ref, positions):
         _rdkit()
         for position in positions:
             ref.chemistry(position)
+            ref.mol(position)
     except Exception:  # noqa: BLE001 - warming is best effort
         pass
 
@@ -334,7 +522,9 @@ def passing_positions(ref, positions, spec):
     mask = np.ones(len(positions), dtype=bool)
     if 'name' in spec:
         mask &= ref.names.iloc[positions].str.contains(spec['name'], regex=False).to_numpy()
-    if 'taxon' in spec:
+    if 'taxon' in spec and ref.taxa_lower is None:
+        mask[:] = False
+    elif 'taxon' in spec:
         level, value = spec['taxon']
         values = ref.taxa_lower[level].iloc[positions]
         if level == 'species':
@@ -361,16 +551,36 @@ def passing_positions(ref, positions, spec):
     return positions[mask]
 
 
-def passing_features(results, spec):
-    """Compound ids with at least one hit meeting ``spec``."""
-    ref = reference(results.params())
-    index = hit_index(results, ref)
+def _passing(ref, index, spec):
+    index = {c: np.asarray(p, dtype=int) for c, p in index.items() if len(p)}
     if not index:
         return set()
     candidates = np.unique(np.concatenate(list(index.values())))
     ok = np.zeros(ref.size, dtype=bool)
     ok[passing_positions(ref, candidates, spec)] = True
     return {compound for compound, positions in index.items() if ok[positions].any()}
+
+
+def passing_features(results, spec, compounds=None):
+    """Compound ids with at least one hit meeting ``spec``, among
+    ``compounds`` when given: an NPAtlas mass match or, once an MS/MS search
+    has run, an MS/MS library match."""
+    from . import feature, msms
+    keep = (lambda c: True) if compounds is None else (lambda c: c in compounds)
+    passing = set()
+    searched = False
+    if feature.atlas_available():
+        searched = True
+        ref = reference(results.params())
+        passing |= _passing(ref, {c: p for c, p in hit_index(results, ref).items() if keep(c)}, spec)
+    record = msms.stored(results) if msms.available() else None
+    if record is not None:
+        searched = True
+        index = {c: [hit[0] for hit in found] for c, found in record['hits'].items() if keep(c)}
+        passing |= _passing(library_annotations(), index, spec)
+    if not searched:
+        raise FileNotFoundError('no database is installed on this server')
+    return passing
 
 
 def annotate_matches(params, matches, spec=None):
@@ -399,6 +609,31 @@ def annotate_matches(params, matches, spec=None):
         passing = set(passing_positions(ref, known, spec).tolist()) if known.size else set()
         for match, position in zip(matches, positions):
             match['passes'] = position in passing
+    return matches
+
+
+def annotate_library_matches(matches, spec=None):
+    """Tags and, with a ``spec``, ``passes`` for MS/MS library matches."""
+    ann = library_annotations()
+    if ann is None:
+        return matches
+    try:
+        _rdkit()
+        chemistry = True
+    except ValueError:
+        chemistry = False
+    for match in matches:
+        index = match['index']
+        match['siderophore'] = bool(ann.siderophore[index])
+        if chemistry:
+            labels, conjugated = ann.chemistry(index)
+            match['warheads'] = list(labels)
+            match['conjugated'] = int(conjugated)
+    if spec:
+        indices = np.array([match['index'] for match in matches], dtype=int)
+        passing = set(passing_positions(ann, indices, spec).tolist()) if indices.size else set()
+        for match in matches:
+            match['passes'] = match['index'] in passing
     return matches
 
 
