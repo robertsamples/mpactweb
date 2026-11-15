@@ -66,6 +66,15 @@ export const api = {
   authStatus: () => request('/api/auth/status'),
   login: (username, password) => json('POST', '/api/auth/login', { username, password }),
   logout: () => json('POST', '/api/auth/logout', {}),
+  emailStart: (email) => json('POST', '/api/auth/email/start', { email }),
+  emailVerify: (email, code) => json('POST', '/api/auth/email/verify', { email, code }),
+
+  // --- admin (email accounts) -------------------------------------------
+  adminUsers: () => request('/api/admin/users'),
+  adminUpdate: (patch) => json('POST', '/api/admin/users', patch),
+  adminAllow: (entry) => json('POST', '/api/admin/allowlist', { entry }),
+  adminDisallow: (entry) => request(`/api/admin/allowlist?entry=${encodeURIComponent(entry)}`,
+                                    { method: 'DELETE' }),
 
   // --- library ---------------------------------------------------------
   listFiles: () => request('/api/files'),

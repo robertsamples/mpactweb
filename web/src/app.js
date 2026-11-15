@@ -17,6 +17,7 @@ import { createStatusBar } from './views/statusbar.js';
 import { showLogin } from './views/login.js';
 import { detailsRail } from './views/detailsrail.js';
 import { dinoCrash, toggleDinoMenu } from './views/dino.js';
+import { buildAdminView } from './views/admin.js';
 
 const POLL_INTERVAL_MS = 1500;
 // Consecutive failed status polls tolerated before a run is reported lost:
@@ -120,7 +121,12 @@ function showSignedIn(auth) {
   if (!auth.required) return;
   const host = $('#run-chip').parentElement;
   const label = auth.user && auth.user !== 'shared' ? auth.user : 'Signed in';
-  host.insertBefore(el('span', { class: 'signed-in', text: label }), $('#run-chip'));
+  host.insertBefore(el('span', {
+    class: 'signed-in', text: label,
+    title: auth.role === 'external'
+      ? 'Outside account: your own uploads and the public demo, within a storage quota'
+      : auth.role === 'internal' ? 'Internal account' : '',
+  }), $('#run-chip'));
   host.append(el('button', {
     class: 'btn small', type: 'button', text: 'Sign out',
     on: {
@@ -309,6 +315,7 @@ async function boot() {
 
   buildSetupViews();
   buildResultViews();
+  if (auth.admin) registerView(buildAdminView());
   mountRail();
   // Settled, not immediate: holding an arrow key in the feature table changes
   // the selection thirty times a second, and each rail render is four or five

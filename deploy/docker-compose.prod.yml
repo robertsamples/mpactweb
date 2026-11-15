@@ -30,13 +30,19 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: caddy:2-alpine
+    # Stock Caddy plus the built documentation and landing page
+    # (deploy/caddy.Dockerfile). Their site blocks are in deploy/sites/.
+    build:
+      context: ..
+      dockerfile: deploy/caddy.Dockerfile
+    image: mpactweb-caddy:latest
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"     # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
       - caddy-data:/data       # certificates: losing these means re-issuing
       - caddy-config:/config
     env_file:

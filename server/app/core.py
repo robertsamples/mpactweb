@@ -70,6 +70,28 @@ finally:
     except ValueError:  # pragma: no cover
         pass
 
+# Two warnings the vendored MS-DIAL importer (mzmineimport.reformat_msdial)
+# raises on every MS-DIAL table, filling the run log with a column list and a
+# dump of 30,000 feature ids:
+#   * DtypeWarning: the export's text header rows and its numbers are read
+#     into the same columns, so pandas reports "mixed types". Expected; the
+#     function re-reads its own output with proper headers straight after.
+#   * FutureWarning: it writes "rt_mz" text ids into a column pandas typed as
+#     numbers. pandas 2.2 (pinned in requirements.txt, as upstream pins it)
+#     converts the column, as it always has; only a later pandas would refuse.
+# The code cannot be edited here (see the module docstring), so the two are
+# filtered, for that module and those messages only. Fix upstream, and drop
+# this, before moving to a pandas that turns the second into an error.
+# Being here, the filters apply in the server and in every analysis process,
+# both of which import the core through this module.
+import warnings as _warnings
+
+import pandas as _pd
+
+_warnings.filterwarnings('ignore', category=_pd.errors.DtypeWarning, module='mzmineimport')
+_warnings.filterwarnings('ignore', category=FutureWarning, module='mzmineimport',
+                         message='Setting an item of incompatible dtype')
+
 # npatlassearch imports epam.indigo for 2D structure rendering, which is an
 # optional server dependency (it ships native libraries). Structure images
 # degrade to "unavailable" rather than breaking the whole app.

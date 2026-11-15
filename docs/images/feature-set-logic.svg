@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" role="img" aria-labelledby="t">
+  <title id="t">Which features a Plot Feature Set colours, for four combinations of Must be in, May be in and the groups left in Available groups</title>
+  <defs>
+    <circle id="A" cx="92" cy="96" r="50"/>
+    <circle id="B" cx="148" cy="96" r="50"/>
+    <circle id="C" cx="120" cy="146" r="50"/>
+    <clipPath id="clipA"><use href="#A"/></clipPath>
+    <mask id="notBC" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="220">
+      <rect width="240" height="220" fill="#fff"/>
+      <use href="#B" fill="#000"/><use href="#C" fill="#000"/>
+    </mask>
+    <mask id="notC" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="220">
+      <rect width="240" height="220" fill="#fff"/>
+      <use href="#C" fill="#000"/>
+    </mask>
+    <g id="outlines" fill="none" stroke="#3c4043" stroke-width="1.6">
+      <use href="#A"/><use href="#B"/><use href="#C"/>
+    </g>
+    <g id="labels" font-size="12" fill="#3c4043">
+      <text x="40" y="38" text-anchor="middle">0 µM Ce</text>
+      <text x="200" y="38" text-anchor="middle">250 µM Ce</text>
+      <text x="120" y="214" text-anchor="middle">Media</text>
+    </g>
+  </defs>
+  <rect width="960" height="330" rx="8" fill="#ffffff"/>
+  <g fill="#6fc0b6">
+    <!-- 1: must be in 0 uM; not in 250 uM or Media -->
+    <g transform="translate(0,6)">
+      <use href="#A" mask="url(#notBC)"/>
+    </g>
+    <!-- 2: must be in both Ce groups; not in Media -->
+    <g transform="translate(240,6)">
+      <use href="#B" clip-path="url(#clipA)" mask="url(#notC)"/>
+    </g>
+    <!-- 3: may be in both Ce groups; not in Media -->
+    <g transform="translate(480,6)">
+      <g mask="url(#notC)"><use href="#A"/><use href="#B"/></g>
+    </g>
+    <!-- 4: must be in both Ce groups; may be in Media -->
+    <g transform="translate(720,6)">
+      <use href="#B" clip-path="url(#clipA)"/>
+    </g>
+  </g>
+  <g transform="translate(0,6)"><use href="#outlines"/><use href="#labels"/></g>
+  <g transform="translate(240,6)"><use href="#outlines"/><use href="#labels"/></g>
+  <g transform="translate(480,6)"><use href="#outlines"/><use href="#labels"/></g>
+  <g transform="translate(720,6)"><use href="#outlines"/><use href="#labels"/></g>
+  <g font-size="12.5" fill="#202124">
+    <g transform="translate(20,250)">
+      <text font-weight="700">1</text>
+      <text x="16"><tspan font-weight="600">Must be in:</tspan> 0 µM Ce</text>
+      <text x="16" y="20"><tspan font-weight="600">Available:</tspan> 250 µM Ce, Media</text>
+    </g>
+    <g transform="translate(260,250)">
+      <text font-weight="700">2</text>
+      <text x="16"><tspan font-weight="600">Must be in:</tspan> 0 µM, 250 µM Ce</text>
+      <text x="16" y="20"><tspan font-weight="600">Available:</tspan> Media</text>
+    </g>
+    <g transform="translate(500,250)">
+      <text font-weight="700">3</text>
+      <text x="16"><tspan font-weight="600">May be in:</tspan> 0 µM, 250 µM Ce</text>
+      <text x="16" y="20"><tspan font-weight="600">Available:</tspan> Media</text>
+    </g>
+    <g transform="translate(740,250)">
+      <text font-weight="700">4</text>
+      <text x="16"><tspan font-weight="600">Must be in:</tspan> 0 µM, 250 µM Ce</text>
+      <text x="16" y="20"><tspan font-weight="600">May be in:</tspan> Media</text>
+    </g>
+  </g>
+  <line x1="240" y1="20" x2="240" y2="310" stroke="#e0e0e0"/>
+  <line x1="480" y1="20" x2="480" y2="310" stroke="#e0e0e0"/>
+  <line x1="720" y1="20" x2="720" y2="310" stroke="#e0e0e0"/>
+</svg>

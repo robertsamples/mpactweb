@@ -47,3 +47,6 @@ deploy/mpact.env
 
 # Scratch inputs (example exports, sequence files, source databases).
 temp/
+
+# --- documentation build output -------------------------------------------
+site/

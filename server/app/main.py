@@ -16,8 +16,8 @@ from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, jobs, storage
-from .routers import authroutes, files, results, runs
+from . import accounts, auth, config, jobs, storage
+from .routers import admin, authroutes, files, results, runs
 
 os.environ.setdefault('MPLBACKEND', 'Agg')
 
@@ -100,6 +100,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         token = request.cookies.get(auth.AUTH_COOKIE)
         request.state.user = auth.read_token(token) if token else None
+        request.state.account = None
+        if request.state.user and auth.mode() == 'email':
+            # A signed cookie says who you are; the account says whether you
+            # may still come in. A blocked account, one waiting for approval,
+            # or one deleted since the cookie was issued is signed out.
+            account = await asyncio.to_thread(accounts.lookup, request.state.user)
+            if account is None or account['role'] == 'blocked' or account['status'] != 'active':
+                request.state.user = None
+            else:
+                request.state.account = account
 
         path = request.url.path
         api = path.startswith('/api/')
@@ -138,21 +148,21 @@ def _cache_policy(path):
     the file's age. After an update that meant some of the front end's
     modules came from the new deployment and some from the cache, for hours.
     ``no-cache`` still caches; it only makes the browser ask, and an
-    unchanged file costs a 304. The images never change under a given name.
+    unchanged file costs a 304. The images get the same: a rebuilt dinosaur
+    sheet keeps its name, and a day's max-age showed the old one for a day.
 
     API responses are a workspace's data and its downloads (a run's
     ``iondict.csv`` is rewritten by a database search), so they are not kept.
     """
     if path.startswith('/api/'):
         return 'no-store'
-    if path.startswith('/assets/'):
-        return 'public, max-age=86400'
     return 'no-cache'
 
 
 app.add_middleware(AuthMiddleware)
 
 app.include_router(authroutes.router)
+app.include_router(admin.router)
 app.include_router(files.router)
 app.include_router(runs.router)
 app.include_router(results.router)

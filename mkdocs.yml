@@ -1,0 +1,93 @@
+site_name: MPACT
+site_description: Documentation for MPACT, a web application for filtering and exploring untargeted LC-MS metabolomics data
+site_url: https://docs.mpactms.org/
+copyright: MPACT is free software under GPLv3.
+
+theme:
+  name: material
+  logo: images/mpact-icon.png
+  favicon: images/mpact-icon.png
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - content.code.copy
+    - search.highlight
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: material/application
+      link: https://app.mpactms.org/
+      name: Open MPACT
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.keys
+  - pymdownx.emoji:
+      emoji_index: !!python/name:zensical.extensions.emoji.twemoji
+      emoji_generator: !!python/name:zensical.extensions.emoji.to_svg
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quick start: getting-started/quick-start.md
+      - The interface: getting-started/interface.md
+  - Setting up an analysis:
+      - Input files: setup/input-files.md
+      - File Selection: setup/file-selection.md
+      - Filtering Settings: setup/filtering.md
+      - Analysis Settings: setup/analysis-settings.md
+      - Running and managing runs: setup/running.md
+  - Results:
+      - Working with results: results/index.md
+      - Data Review: results/data-review.md
+      - Group Analysis: results/group-analysis.md
+      - Dendrogram: results/dendrogram.md
+      - Multivariate: results/multivariate.md
+      - m/z vs RT: results/mz-rt.md
+      - Mass Defect: results/mass-defect.md
+      - 3D Fold Change: results/fold-change-3d.md
+      - Volcano: results/volcano.md
+      - Heatmap: results/heatmap.md
+      - Feature Info: results/feature-info.md
+      - Downloads: results/downloads.md
+  - Running your own server:
+      - Installation: self-hosting/index.md
+      - Configuration: self-hosting/configuration.md
+      - Sign-in and accounts: self-hosting/authentication.md
+      - Deploying on a server: self-hosting/deployment.md
+  - Reference:
+      - Coming from the desktop app: reference/desktop-app.md
+      - Troubleshooting: reference/troubleshooting.md
+      - Development: reference/development.md
+      - Architecture: architecture.md
+
+validation:
+  omitted_files: warn
+  unrecognized_links: warn
+  anchors: warn

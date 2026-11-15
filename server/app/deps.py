@@ -2,7 +2,7 @@
 
 from fastapi import Depends, HTTPException, Request, Response
 
-from . import auth, config, storage
+from . import accounts, auth, config, storage
 from .results import MissingResults, RunResults
 
 
@@ -17,10 +17,15 @@ def get_session(request: Request, response: Response) -> storage.Session:
     point of having named accounts on a shared instrument-facility server.
     """
     user = getattr(request.state, 'user', None)
+    account = getattr(request.state, 'account', None)
     if user and auth.mode() == 'users':
-        session = storage.Session.at_id(auth.workspace_id(user))
-    else:
-        session = storage.Session.load_or_create(request.cookies.get(config.SESSION_COOKIE))
+        return storage.Session.at_id(auth.workspace_id(user))
+    if account is not None:
+        accounts.touch(account['email'])
+        # The workspace belongs to the account, not the browser, so no
+        # session cookie is needed.
+        return storage.Session.at_id(account['workspace'])
+    session = storage.Session.load_or_create(request.cookies.get(config.SESSION_COOKIE))
     response.set_cookie(
         config.SESSION_COOKIE, session.id,
         max_age=config.SESSION_MAX_AGE_SECONDS,
@@ -29,6 +34,34 @@ def get_session(request: Request, response: Response) -> storage.Session:
         secure=config.SESSION_COOKIE_SECURE,
     )
     return session
+
+
+def get_role(request: Request) -> str:
+    """'internal' or 'external'. Without email accounts there is no
+    outside user to keep anything from, so everyone is internal."""
+    account = getattr(request.state, 'account', None)
+    return account['role'] if account is not None else 'internal'
+
+
+def limits(role):
+    """``(max runs, max bytes)`` for a role; 0 means no limit."""
+    if role == 'internal':
+        return config.INTERNAL_MAX_RUNS, config.INTERNAL_MAX_STORAGE_MB * 1024 * 1024
+    return config.EXTERNAL_MAX_RUNS, config.EXTERNAL_MAX_STORAGE_MB * 1024 * 1024
+
+
+def check_storage(session, role, adding=0):
+    """Refuse (413) when ``adding`` more bytes would pass the workspace's
+    storage quota."""
+    _, max_bytes = limits(role)
+    if not max_bytes:
+        return
+    used = session.usage()[0]
+    if used + adding > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f'this workspace is using {used / 2**20:,.0f} MB of its '
+                   f'{max_bytes / 2**20:,.0f} MB; delete old runs or uploads to make room')
 
 
 def get_run(run_id: str, session: storage.Session = Depends(get_session)):

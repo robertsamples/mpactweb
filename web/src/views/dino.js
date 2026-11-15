@@ -258,6 +258,7 @@ export const THEMES = [
   { id: 'newyear', label: 'New Year' },
   { id: 'valentine', label: "Valentine's Day" },
   { id: 'mardigras', label: 'Mardi Gras' },
+  { id: 'womensday', label: "International Women's Day" },
   { id: 'easter', label: 'Easter' },
   { id: 'pride', label: 'Pride' },
   { id: 'july4', label: 'Fourth of July' },
@@ -287,20 +288,24 @@ function laborDay(y) {
 }
 
 /** [id, first day, last day] of each holiday's window in year y, inclusive.
- * The first match wins: Mardi Gras can overlap Valentine's week, and takes it. */
+ * The first match wins: Mardi Gras can overlap Valentine's week, and takes it;
+ * in a year with a late Mardi Gras it takes some of Women's Day week too, but
+ * never March 8 itself. */
 function windows(y) {
   const sunday = easter(y);
   const labor = laborDay(y);
   return [
     ['newyear', day(y - 1, 12, 29), day(y, 1, 2)],
+    ['womensday', day(y, 3, 8), day(y, 3, 8)],               // the day itself, whatever else is on
     ['mardigras', shift(sunday, -51), shift(sunday, -47)],   // Friday to Fat Tuesday
     ['valentine', day(y, 2, 7), day(y, 2, 14)],
+    ['womensday', day(y, 3, 1), day(y, 3, 8)],               // the week before March 8, and the day
     ['easter', shift(sunday, -7), sunday],
-    ['pride', day(y, 6, 1), day(y, 6, 7)],
+    ['pride', day(y, 6, 1), day(y, 6, 14)],                  // the first two weeks of Pride Month
     ['july4', day(y, 6, 27), day(y, 7, 4)],
     ['labor', shift(labor, -3), labor],                      // Friday to Monday
     ['halloween', day(y, 10, 24), day(y, 10, 31)],
-    ['santa', day(y, 12, 18), day(y, 12, 25)],
+    ['santa', day(y, 12, 11), day(y, 12, 25)],               // the two weeks before Christmas, and the day
     ['newyear', day(y, 12, 29), day(y + 1, 1, 2)],
   ];
 }

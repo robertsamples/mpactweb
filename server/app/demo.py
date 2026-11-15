@@ -51,6 +51,12 @@ class Dataset:
     suggested: dict = field(default_factory=dict)
     # groups -> {'settings': {...}, 'groupsets': [...]} applied on load.
     preset: object = None
+    # 'public': anyone. 'internal': internal accounts only (see accounts.py);
+    # without email accounts everyone is internal.
+    audience: str = 'public'
+
+    def visible_to(self, role):
+        return self.audience == 'public' or role == 'internal'
 
     def missing(self):
         return [name for _, name in self.files if not (_dir() / name).is_file()]
@@ -159,6 +165,8 @@ def _chm350(initials):
                ('fragments', f'{stem}.msp.gz')),
         summary='CHM350 MS-DIAL dataset',
         preset=chm350_preset,
+        # The class's own data.
+        audience='internal',
     )
 
 

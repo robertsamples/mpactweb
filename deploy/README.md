@@ -159,6 +159,22 @@ docker compose -f deploy/docker-compose.prod.yml up -d --build
 The build fails rather than deploys if a vendored pipeline file was edited in
 place — that check is the point of `scripts/vendor_core.py verify`.
 
+**Other sites on the same Caddy.** The Caddyfile serves the app at
+`MPACT_SITE_ADDRESS` and then imports `deploy/sites/*.caddy`. On mpactms.org,
+`sites/mpactms.org.caddy` serves `docs.mpactms.org` (the documentation) and
+`mpactms.org` / `www.mpactms.org` (the landing page in `deploy/landing/`,
+which also forwards old `mpactms.org/#view/run` links to the app). Both are
+built into the Caddy image by `deploy/caddy.Dockerfile`, so after changing the
+docs or the landing page:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml build caddy
+docker compose -f deploy/docker-compose.prod.yml up -d caddy
+```
+
+Every hostname needs a DNS record before Caddy can get its certificate. A
+different deployment can delete `deploy/sites/mpactms.org.caddy`.
+
 **Institutional single sign-on.** MPACT is not an identity provider. For
 Smith credentials, put an authenticating proxy in front (Caddy
 `forward_auth`, oauth2-proxy, Shibboleth), run MPACT with `MPACT_AUTH=none`,

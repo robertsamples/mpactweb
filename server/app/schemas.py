@@ -192,6 +192,38 @@ class LoginRequest(BaseModel):
     password: str = ''
 
 
+class EmailStart(BaseModel):
+    """Ask for a sign-in code."""
+    model_config = ConfigDict(extra='forbid')
+
+    email: str = Field(max_length=320)
+
+
+class EmailVerify(BaseModel):
+    """Sign in with the code that was sent."""
+    model_config = ConfigDict(extra='forbid')
+
+    email: str = Field(max_length=320)
+    code: str = Field(max_length=32)
+
+
+class AccountUpdate(BaseModel):
+    """An administrator's change to an account. ``role`` null puts it back
+    to the role its address gives it; leave a field out to leave it alone."""
+    model_config = ConfigDict(extra='forbid')
+
+    email: str = Field(max_length=320)
+    role: Optional[Literal['internal', 'external', 'blocked']] = None
+    reset_role: bool = False
+    approve: bool = False
+
+
+class AllowlistEntry(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    entry: str = Field(max_length=320)
+
+
 class FileOut(BaseModel):
     id: str
     kind: str

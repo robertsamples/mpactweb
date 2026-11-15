@@ -239,7 +239,10 @@ def test_static_files_must_be_revalidated_and_api_responses_are_not_stored(clien
     assert again.status_code == 304, 'an unchanged module should cost a 304, not a download'
 
     assert client.get('/api/health').headers['cache-control'] == 'no-store'
-    assert client.get('/assets/mpact-icon.png').headers['cache-control'].startswith('public')
+    icon = client.get('/assets/dino/standard.png')
+    assert icon.headers['cache-control'] == 'no-cache', 'a rebuilt sprite sheet keeps its name'
+    assert client.get('/assets/dino/standard.png',
+                      headers={'If-None-Match': icon.headers['etag']}).status_code == 304
 
 
 def test_an_oversized_upload_is_refused_before_it_is_read(client, monkeypatch):

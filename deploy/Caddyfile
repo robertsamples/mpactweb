@@ -1,9 +1,13 @@
 # Caddy in front of MPACT.
 #
-# MPACT_SITE_ADDRESS is your hostname, e.g. mpact.example.edu. Caddy obtains
-# and renews a certificate for it automatically; there is nothing else to do
-# for TLS. For a first run without DNS, set it to :80 and Caddy serves plain
-# HTTP (then leave MPACT_SESSION_COOKIE_SECURE=false until you have a name).
+# MPACT_SITE_ADDRESS is the app's hostname, e.g. mpact.example.edu (on
+# mpactms.org it is app.mpactms.org). Caddy obtains and renews a certificate
+# for it automatically; there is nothing else to do for TLS. For a first run
+# without DNS, set it to :80 and Caddy serves plain HTTP (then leave
+# MPACT_SESSION_COOKIE_SECURE=false until you have a name).
+#
+# Any other sites (documentation, a landing page) live in deploy/sites/*.caddy
+# and are imported at the end of this file.
 
 {$MPACT_SITE_ADDRESS} {
 	encode zstd gzip
@@ -40,3 +44,5 @@
 		}
 	}
 }
+
+import /etc/caddy/sites/*.caddy

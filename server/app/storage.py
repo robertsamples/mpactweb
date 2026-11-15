@@ -269,6 +269,28 @@ class Session:
         shutil.rmtree(self.library_dir / file_id, ignore_errors=True)
         return True
 
+    # --- size ---------------------------------------------------------------
+
+    def usage(self):
+        """``(bytes on disk, number of runs)`` for this workspace."""
+        total = 0
+        stack = [self.root]
+        while stack:
+            try:
+                entries = list(os.scandir(stack.pop()))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    else:
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+        runs = sum(1 for p in self.runs_dir.iterdir() if p.is_dir()) if self.runs_dir.is_dir() else 0
+        return total, runs
+
     # --- runs -------------------------------------------------------------
 
     def runs(self):

@@ -1,0 +1,28 @@
+# The public mpactms.org sites besides the app itself, imported by the
+# Caddyfile. A different deployment can delete this file; the app block in the
+# Caddyfile does not depend on it.
+#
+# The documentation and the landing page are built into the Caddy image
+# (deploy/caddy.Dockerfile), so `docker compose build caddy` refreshes both.
+
+docs.mpactms.org {
+	encode zstd gzip
+	root * /srv/docs
+	file_server
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+mpactms.org, www.mpactms.org {
+	encode zstd gzip
+	root * /srv/landing
+	file_server
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

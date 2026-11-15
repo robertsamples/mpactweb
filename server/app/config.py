@@ -132,6 +132,33 @@ def _resolve():
         # reachable directly.
         'TRUST_PROXY': _bool('MPACT_TRUST_PROXY', False),
 
+        # --- email accounts (MPACT_AUTH=email; see accounts.py) ----------
+        # Addresses at these domains (and their subdomains) are internal.
+        'INTERNAL_DOMAINS': os.environ.get('MPACT_INTERNAL_DOMAINS', 'smith.edu'),
+        # Who sees the Admin page. Comma-separated addresses.
+        'ADMIN_EMAILS': os.environ.get('MPACT_ADMIN_EMAILS', ''),
+        # 'open': anyone may sign up. 'approval': an outside address waits
+        # until an administrator approves it.
+        'SIGNUP': os.environ.get('MPACT_SIGNUP', 'open').strip().lower(),
+        # Quotas. 0 means none. Internal accounts have none by default.
+        'EXTERNAL_MAX_RUNS': _int('MPACT_EXTERNAL_MAX_RUNS', 10),
+        'EXTERNAL_MAX_STORAGE_MB': _int('MPACT_EXTERNAL_MAX_STORAGE_MB', 1024),
+        'INTERNAL_MAX_RUNS': _int('MPACT_INTERNAL_MAX_RUNS', 0),
+        'INTERNAL_MAX_STORAGE_MB': _int('MPACT_INTERNAL_MAX_STORAGE_MB', 0),
+        # The site's address, for links in emails (e.g. https://mpactms.org).
+        'SITE_URL': os.environ.get('MPACT_SITE_URL', '').rstrip('/'),
+
+        # Outgoing mail (mailer.py): any account that allows SMTP sign-in.
+        'SMTP_HOST': os.environ.get('MPACT_SMTP_HOST', ''),
+        'SMTP_PORT': _int('MPACT_SMTP_PORT', 587),
+        'SMTP_SECURITY': os.environ.get('MPACT_SMTP_SECURITY', 'starttls'),
+        'SMTP_USER': os.environ.get('MPACT_SMTP_USER', ''),
+        'SMTP_PASSWORD': os.environ.get('MPACT_SMTP_PASSWORD', ''),
+        'MAIL_FROM': os.environ.get('MPACT_MAIL_FROM', ''),
+        'MAIL_REPLY_TO': os.environ.get('MPACT_MAIL_REPLY_TO', ''),
+        # Development only: with no SMTP server, write mail to this file.
+        'MAIL_OUTBOX': os.environ.get('MPACT_MAIL_OUTBOX', ''),
+
         'DEV_MODE': _bool('MPACT_DEV', False),
     }
 

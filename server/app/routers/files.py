@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 import time
 
 from .. import config, demo, inspect as inspection, mpctsession, msdial, storage
-from ..deps import get_file, get_session
+from ..deps import check_storage, get_file, get_role, get_session
 from ..schemas import AnalysisSettings, FileOut, TableIn
 
 router = APIRouter(prefix='/api/files', tags=['files'])
@@ -63,6 +63,7 @@ async def upload_file(
     kind: str = Form(...),
     file: UploadFile = File(...),
     session: storage.Session = Depends(get_session),
+    role: str = Depends(get_role),
 ):
     if kind not in storage.KINDS:
         raise HTTPException(status_code=400,
@@ -75,6 +76,9 @@ async def upload_file(
         raise HTTPException(status_code=400,
                             detail=f'a {kind} must be one of: {allowed} (got "{suffix or name}")')
 
+    # A workspace already at its quota takes nothing more; one under it is
+    # checked again below with the file's real size.
+    await run_in_threadpool(check_storage, session, role)
     record = session.add_file(kind=kind, name=name, size=0)
     target = session.path_for(record)
     written = 0
@@ -89,6 +93,12 @@ async def upload_file(
                 handle.write(chunk)
     except Exception:
         # Never leave a half-written file in the library claiming to be usable.
+        session.remove_file(record.id)
+        raise
+
+    try:
+        await run_in_threadpool(check_storage, session, role)
+    except HTTPException:
         session.remove_file(record.id)
         raise
 
@@ -199,19 +209,22 @@ def create_table(payload: TableIn, session: storage.Session = Depends(get_sessio
 
 
 @router.get('/demo')
-def demo_info():
-    """The bundled demo datasets and whether each is installed here."""
-    datasets = [dataset.describe() for dataset in demo.DATASETS]
+def demo_info(role: str = Depends(get_role)):
+    """The bundled demo datasets this account may use, and whether each is
+    installed here."""
+    datasets = [dataset.describe() for dataset in demo.DATASETS if dataset.visible_to(role)]
     return {
         'available': any(d['available'] for d in datasets),
-        'default': demo.DEFAULT,
+        'default': demo.DEFAULT if any(d['id'] == demo.DEFAULT for d in datasets)
+                   else (datasets[0]['id'] if datasets else None),
         'datasets': datasets,
     }
 
 
 @router.post('/demo', response_model=list[FileOut])
 def load_demo(payload: dict | None = Body(default=None),
-              session: storage.Session = Depends(get_session)):
+              session: storage.Session = Depends(get_session),
+              role: str = Depends(get_role)):
     """Copy a demo dataset into this session's library.
 
     Copied rather than referenced, so the demo behaves exactly like an upload
@@ -227,6 +240,11 @@ def load_demo(payload: dict | None = Body(default=None),
         dataset = demo.get((payload or {}).get('id'))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f'no demo dataset {exc}') from exc
+    if not dataset.visible_to(role):
+        # As if it did not exist: an outside account is not told what the
+        # internal datasets are called.
+        raise HTTPException(status_code=404, detail=f"no demo dataset '{dataset.id}'")
+    check_storage(session, role)
     if not dataset.available():
         raise HTTPException(
             status_code=503,
@@ -261,6 +279,7 @@ def load_demo(payload: dict | None = Body(default=None),
 async def import_session(
     file: UploadFile = File(...),
     session: storage.Session = Depends(get_session),
+    role: str = Depends(get_role),
 ):
     """Open a saved ``.mpct`` session: the desktop's File > Open.
 
@@ -287,6 +306,7 @@ async def import_session(
                 detail=f'session file exceeds the '
                        f'{config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit')
 
+    await run_in_threadpool(check_storage, session, role, len(blob))
     # Unpickling, writing and inspecting the files is all blocking work; see
     # upload_file for why it must not run on the event loop.
     return await run_in_threadpool(_import_session, session, name, bytes(blob))

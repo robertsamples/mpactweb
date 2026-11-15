@@ -1,187 +1,161 @@
 # Architecture
 
-## The constraint that shaped everything
+MPACT Web is a FastAPI server that runs the MPACT analysis pipeline, plus a
+static JavaScript front end that draws the results with Plotly. The pipeline
+itself is the desktop application's code, copied without changes.
 
-MPACT's analysis pipeline had to be reused **as-is**. That single constraint
-decided most of what follows, so it is worth being precise about what "the
-pipeline" is.
+## The vendored pipeline
 
-The desktop repository's `code/` directory splits cleanly in two:
+The desktop repository's `code/` directory has two kinds of modules: those
+that depend on Qt and those that do not.
 
-| Qt-free (reused verbatim) | Qt-bound (not reusable) |
+| Qt-free (copied) | Qt-dependent (replaced) |
 |---|---|
 | `MSFaST.py`, `filter.py`, `stats.py`, `groupsets.py` | `main.py`, `ui_*.py` |
 | `ordination.py`, `pvclust.py`, `clusterpurity.py`, `qualityscore.py`, `treefilters.py`, `biogroups.py`, `dbsearch.py` | `plotting.py` |
 | `translators.py`, `getfragdb.py`, `mspwriter.py`, `csvcache.py`, `mzmineimport.py` | `dialogs.py`, `searchtree.py`, `svgloader.py`, `files*.py` |
 
-Upstream had already done most of this separation — `run_MSFaST(params)` is
-a pure pandas/numpy/file-IO function with no Qt anywhere, and several plot
-computations (`ordination`, `clusterpurity`, `qualityscore`) had been pulled
-out into testable Qt-free modules. That is what made a faithful port
-possible rather than a rewrite.
+The Qt-free modules are copied into `server/mpact_core/` and pinned by hash in
+`VENDOR_MANIFEST.json`. `scripts/vendor_core.py verify` checks the hashes in CI
+and during the Docker build, so a local edit to a vendored file fails the
+build. Changes go upstream first and are then synced.
 
-Everything in the left column is copied into `server/mpact_core/` unchanged
-and hash-pinned in `VENDOR_MANIFEST.json`. Only the right column had to be
-replaced.
+`run_MSFaST(params)` uses only pandas, NumPy and the filesystem, and the
+compute parts of several plots (`ordination`, `clusterpurity`,
+`qualityscore`) were already separate modules. Only the Qt-dependent modules
+in the right-hand column needed new code.
 
-## Where the analysis runs, and why
+## Where the analysis runs
 
-Three designs were possible.
+The analysis runs on the server. Running it in the browser with Pyodide was
+not practical:
 
-### In the browser (Pyodide / WASM) — rejected
+- `fastcluster` and `epam.indigo` are native extensions with no Pyodide builds.
+- The NPAtlas reference table is about 33 MB.
+- `run_MSFaST` writes and re-reads CSV files between stages, so it needs a
+  real filesystem.
 
-The pipeline depends on `fastcluster` and `epam.indigo` (native extensions
-with no Pyodide builds), on a 33MB reference table, and on a real
-filesystem: `run_MSFaST` deliberately round-trips through CSVs between
-stages, with a comment explaining that re-deriving one of those reshapes in
-memory is exactly the class of subtle bug it is avoiding. Running it in WASM
-would mean rewriting the code the project exists to reuse.
-
-### Server-side, direct upload — chosen
-
-The pipeline runs unmodified against a real filesystem. The user's browser
-does no analysis, so a 4,000-feature study behaves the same on a laptop as
-on a workstation.
-
-### Upload-then-select (GNPS-style) — folded in
-
-This is a storage decision rather than a different workflow, so it is layered
-underneath rather than chosen instead: uploads land in a per-session library
-and are *copied* into each run. A parameter sweep re-selects an already
-uploaded peak table, and deleting a library file can't disturb a run in
-flight. The picker on top stays the desktop's four labelled slots.
+Uploaded files go into a per-workspace library and are copied into each run.
+A user can run the same peak table again with different settings without
+uploading it again, and deleting a library file does not affect runs that
+used it.
 
 ## Request flow
 
 ```
-browser ── upload ──▶ library/<file id>/          (inspected on arrival)
+browser ── upload ──▶ library/<file id>/          (checked on arrival)
         ── run ─────▶ runs/<run id>/rawdata/      (copies, converted in place)
                           │
-                          ▼  spawned process
-                      run_MSFaST(params)          ← vendored, unmodified
+                          ▼  child process
+                      run_MSFaST(params)          (vendored)
                           │
                           ▼
-                      output/<peak table stem>/   ← the desktop's outputdir
+                      output/<peak table stem>/   (same layout as the desktop)
                           │
-        ◀── JSON ────  plotdata/*                 ← reads those same files
-        ◀── files ───  downloads (incl. .mpct)
+        ◀── JSON ────  app/plotdata/*             (reads those files)
+        ◀── files ───  downloads, including .mpct
 ```
 
-### Why each run gets its own process
+## Run processes
 
-Three reasons, any one of which would be sufficient:
+Each analysis runs in its own spawned process:
 
-1. `MSFaST`, `filter` and `stats` communicate through a module-level
-   `global analysis_params`. Two concurrent runs in one interpreter would
-   overwrite each other's parameters mid-pipeline. Process isolation makes
-   that impossible without touching the vendored code.
-2. The work is CPU-bound pandas/numpy and must not sit on the event loop.
-3. `pvclust` starts its own worker pool for bootstrap dendrograms, which a
-   daemonic worker could not do.
+- `MSFaST`, `filter` and `stats` share parameters through a module-level
+  `global analysis_params`, so two runs in one interpreter would overwrite each
+  other's settings.
+- The work is CPU-bound and must stay off the server's event loop.
+- `pvclust` starts its own worker pool for bootstrap support, which a
+  daemonic worker process cannot do.
 
-The child writes its own `status.json` and tees stdout/stderr to `log.txt`,
-which is what lets the browser show real progress (the pipeline reports by
-printing) and what lets a status poll still work after a server restart.
+The child process writes `status.json` and copies its stdout and stderr to
+`log.txt`. The Run view streams that log, and a status request still works
+after the server restarts. `app/jobs.py` queues runs and limits how many run
+at once (`MPACT_MAX_CONCURRENT_JOBS`).
 
-## Parameter mapping
+## Parameters
 
-`app/params.py` is the web equivalent of `MainWindow.enumerate_inputs`, and
-is written to be read side by side with it: same order, same derived values,
-same implicit defaults. `app/schemas.py` carries the desktop's Qt Designer
-widget defaults, so a fresh web form and a fresh desktop launch agree.
+`app/params.py` builds the pipeline's parameter object from the web form. It
+follows `MainWindow.enumerate_inputs` in the desktop app line by line, in the
+same order. `app/schemas.py` holds the desktop's default widget values. Points
+that are easy to get wrong, all covered by `tests/test_params.py`:
 
-The subtle parts, all pinned by `tests/test_params.py`:
+- With no Plot Feature Sets defined, one is created through `GroupSetModel`:
+  "Features not in blanks" when blank filtering is on, otherwise
+  "All features".
+- The enabled filters are added to every feature set's exclusion list as
+  graph filters, in the order `cv`, `rel`, `insource`.
+- The output directory is `<output>/<peak table stem>`, with a `plots/`
+  subdirectory. Every path written by the pipeline or read by the results
+  layer is derived from it.
+- The isotope window sets both `isopeakwin` and `dimerpeakwin`. `grpave` and
+  `prperr` are always on, since the desktop has no control for either.
 
-- **The implicit default feature set.** A user who never opens the groupset
-  editor gets "Features not in blanks" (blank filtering on) or "All features"
-  (off) — reconstructed here through `GroupSetModel`, exactly as the desktop
-  builds it.
-- **Graph filters.** `['cv', 'rel', 'insource']`, in that order, merged into
-  every feature set's exclusion list.
-- **The output directory.** `<chosen>/<peak table stem>`, with a `plots/`
-  subdirectory. Every path the pipeline writes, and every path the results
-  layer later reads, derives from it.
-- **Derived values.** One isotope-window control feeds both `isopeakwin` and
-  `dimerpeakwin`; `grpave` and `prperr` are forced on (the desktop has no
-  widget for either).
+## Plots
 
-## Replacing the plot layer
+`plotting.py` draws matplotlib figures into Qt widgets and cannot be reused.
+Its work is split in two:
 
-`plotting.py` is matplotlib drawn into Qt widgets — the one part that could
-not come across. It is replaced by two halves:
+- `app/plotdata/` builds each plot's data from the run's output files, calling
+  the vendored modules: `ordination` (`load_ordination_matrix`, `run_pca`,
+  `run_nmds`, `run_plsda`, `similarity_matrix`, `top_loadings`),
+  `pvclust.PvClust`, `clusterpurity` (`purity_link_color_func`,
+  `purity_summary`), `qualityscore.compute_cv_quality`, and `treefilters` for
+  the feature table's column filters.
+- `web/src/plots/` draws the data with Plotly.
 
-- `app/plotdata/` derives each plot's **data** from the run's output files,
-  calling the vendored compute modules rather than reimplementing them:
-  `ordination.load_ordination_matrix` / `run_pca` / `run_nmds` / `run_plsda`
-  / `similarity_matrix` / `top_loadings`, `pvclust.PvClust`,
-  `clusterpurity.purity_link_color_func` / `purity_summary`,
-  `qualityscore.compute_cv_quality`, `treefilters` for the feature table's
-  column filters.
-- `web/src/plots/` **draws** it with Plotly.
+The browser only reimplements code that came from plotting libraries on the
+desktop: seaborn's row scaling (`standard_scale=0`), the squarified treemap
+layout, and the UpSet matrix. `tests/test_vendor.py` checks that every vendored
+function the plot layer calls still exists.
 
-Only genuinely presentational maths is reimplemented client-side, and only
-where the original was a rendering library rather than analysis: seaborn's
-`standard_scale=0` row scaling, the squarified treemap layout, and the UpSet
-matrix. `tests/test_vendor.py` asserts that every core function the plot
-layer leans on still exists, so losing one is a test failure rather than a
-plot that quietly diverges.
+## Differences from the desktop
 
-### Deliberate differences from the desktop
-
-| Desktop | Here | Why |
+| Desktop | Web | Reason |
 |---|---|---|
-| Fixed axis ranges on m/z-vs-RT (0–11.5 min, 0–1850 m/z) and the quality view | Data-driven ranges | The fixed limits silently clip later-eluting or heavier features. The desktop values are still sent as `desktop_range`. |
-| Volcano thresholds re-render server-side | Re-classified in the browser | Same rule, no round trip — dragging a threshold is instant. |
-| `PvClust(..., parallel=True)` | `parallel=False` | Each request already competes for cores with other sessions; the bootstrap result is identical. |
-| Hit counts filled when the Feature Info tab first opens | Explicit "Search NPAtlas" button | It costs seconds and loads a 33MB table; plenty of runs never need it. Same `dbsearch.search_npatlas` call. |
-| Feature table held entirely in a Qt model | Unpaged to the user, windowed twice: filtering/sorting server-side, every id sent once, rows fetched a page at a time as they scroll into view, and only the visible rows in the DOM | The whole list has to be reachable by arrow key and range-selectable, as it is on the desktop, but tens of thousands of rows are megabytes to send and make every keystroke stutter as DOM. Filtering still uses the vendored `treefilters` rules. |
-| One highlighted feature | A multiple selection (`selectedFeatures`, with one focused feature) shared by the table and every plot | Marking several features on one plot, and exporting a picked set, need a set; the focused feature is what the single highlight was. |
-| Heatmap draws every feature row | Past `MPACT_MAX_HEATMAP_ROWS` rows, neighbours in the clustered order are averaged for display | A plot is a few hundred pixels tall; more rows than that are sub-pixel and only cost drawing time. The feature list and row dendrogram still cover every feature. |
-| "Collapse Replicates" checkbox on the ordination tab | A named **Points** choice (Individual Injections / Biological Replicates) | Same two states and the same `load_ordination_matrix` call; a checkbox only says what it does if you already know what it collapses. The point count is printed under the plot so the state is verifiable. |
-| Feature identity in main-window labels plus a Details dialog | A details rail beside every plot | It fills on click with identity, statistics and a per-group abundance chart, so a picked point is interpretable without changing tabs. |
-| Fixed-size plot canvases | Plots fill the window and reflow on resize | A browser window is not a fixed-size Qt frame, and a fixed slab leaves dead space on a tall screen. |
+| Fixed axis ranges on m/z vs RT (0 to 11.5 min, 0 to 1850 m/z) | Ranges fit the data | The fixed ranges cut off late-eluting and heavy features. The desktop values are still sent as `desktop_range`. |
+| Volcano thresholds applied by redrawing | Applied in the browser | No server round trip when a threshold changes. |
+| `PvClust(..., parallel=True)` | `parallel=False` | Runs from different users already compete for cores. The result is the same. |
+| NPAtlas search when Feature Info first opens | The same, plus **Re-search MS1** | Not run at the end of every analysis, since it loads a 33 MB table and many runs never use it. |
+| Feature table held in a Qt model | Filtered and sorted on the server; rows fetched as they scroll into view, and only visible rows rendered | Large datasets have tens of thousands of rows. The whole list is still reachable with the arrow keys and range selection. |
+| One highlighted feature | A multiple selection with one focused feature | Needed to mark several features on a plot and to export a chosen set. |
+| Heatmap draws every row | Above `MPACT_MAX_HEATMAP_ROWS`, adjacent rows are averaged for display | More rows than pixels only slows drawing. The feature list and row dendrogram still include every feature. |
+| "Collapse Replicates" checkbox on the ordination | **Points:** Individual Injections or Biological Replicates | Same two states, named for what they show. |
+| Labels in the main window plus a Details dialog | A details panel beside every plot | Shows a picked feature without changing tabs. |
+| Fixed-size plot canvases | Plots resize with the window | |
 
-## The demo dataset
+## Demo dataset
 
-`server/data/demo/` holds the PTY087I2 study (peak table, sample list,
-metadata, MS2 fragment database) — the dataset MPACT's own documentation and
-tests use. Loading it *copies* the files into the caller's session library,
-so from that point it behaves exactly like an upload: re-selectable,
-re-runnable with different parameters, deletable, and converted per-run
-without touching the bundled originals. The endpoint is idempotent, so a
-double click cannot fill the library with duplicates.
+`server/data/demo/` holds the PTY087I2 study: peak table, sample list,
+metadata and MS2 fragment database. Loading it copies the files into the
+user's library, after which they behave like any upload. Loading the same
+dataset twice does not create duplicates.
 
 ## Front end
 
-No build step: ES modules served statically, Plotly from a CDN with a
-local-vendor fallback that the page prefers when present. The UI is a fixed
-set of panels mirroring the desktop's tabs, so a framework and a bundler
-would cost more than they save.
+The front end is plain ES modules served as static files, with no build step.
+Plotly loads from a CDN and the JSME structure editor from the JSME site,
+unless `scripts/fetch_web_vendor.py` has put local copies in `web/vendor/`.
 
-State lives in one store with topic subscriptions (`web/src/state.js`). That
-is what makes the cross-plot selection work: picking a feature on any plot
-updates one store key, and every subscribed view — Feature Info, the
-highlight marker on other tabs — reacts without knowing about each other.
-It is the desktop's `highlight_feature` broadcast, expressed as a
-subscription.
+State is held in one store with subscriptions (`web/src/state.js`). Selecting
+a feature sets one key in the store, and the table, the plots and the details
+panel each update from it. This replaces the desktop's `highlight_feature`
+signal.
 
-The palette is taken from the desktop's Qt stylesheets (shell `rgb(35,35,35)`,
-panels `rgb(40,40,40)`, controls `rgb(75,75,75)`, text `rgb(212,212,212)`),
-so the two apps read as the same application rather than as lookalikes.
+The colours match the desktop's Qt stylesheets: shell `rgb(35,35,35)`, panels
+`rgb(40,40,40)`, controls `rgb(75,75,75)`, text `rgb(212,212,212)`.
 
-## Testing
+## Tests
 
-- `tests/test_pipeline_e2e.py` — uploads a real dataset over the real HTTP
-  API, runs the real pipeline, and asserts every plot payload builds and is
-  internally consistent (array lengths aligned, matrix shape matching its
-  labels, dendrogram colours matching its segments). Nothing is mocked.
-- `tests/test_params.py` — pins the `enumerate_inputs` mapping.
-- `tests/test_vendor.py` — hash-verifies the vendored core, checks no Qt
-  import leaked into the server, checks nothing outside `app/core.py`
-  imports a vendored module by flat name, and checks the core entry points
-  still have the shapes the web layer calls.
+Server tests live in `server/tests/`:
 
-The UI itself was verified by driving a real browser through the whole
-workflow — upload, run, every result tab, every switcher, cross-tab
-selection — asserting no console errors, no HTTP errors, and no clipped
-layout.
+- `test_pipeline_e2e.py` uploads a real dataset through the HTTP API, runs the
+  pipeline, and checks that every plot payload builds and is consistent:
+  array lengths match, matrix shapes match their labels, and dendrogram
+  colours match their segments. Nothing is mocked.
+- `test_params.py` covers the parameter mapping described above.
+- `test_vendor.py` checks the vendored hashes, that no Qt import reaches the
+  server, that only `app/core.py` imports vendored modules by their flat names,
+  and that the vendored functions the web layer calls keep their signatures.
+
+There are no automated browser tests. Front-end changes are checked by running
+the app in a browser.

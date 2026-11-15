@@ -1079,3 +1079,27 @@ table.features tbody tr.empty-row:hover { background: none; }
    features, and the browser's anchoring then moved it again as each section
    above filled in, so it crept down a little further with every feature. */
 .details-rail .rail-sections { overflow-anchor: none; }
+
+/* --- email sign-in -------------------------------------------------------- */
+.login-step { display: flex; flex-direction: column; gap: 12px; }
+.login-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.login-code { font-size: 20px; letter-spacing: 4px; text-align: center; font-variant-numeric: tabular-nums; }
+.login-links { display: flex; justify-content: space-between; gap: 10px; }
+.link-button {
+  background: none; border: none; padding: 0; color: var(--accent); cursor: pointer;
+  font: inherit; font-size: 12px;
+}
+.link-button:hover:not(:disabled) { text-decoration: underline; }
+.link-button:disabled { color: var(--muted); cursor: default; }
+
+/* --- admin ------------------------------------------------------------------ */
+.admin-view .panel h3 input[type=search] { margin-left: auto; width: 220px; font-weight: 400; }
+.admin-view table.admin-users select { padding: 2px 4px; font-size: 12px; }
+.admin-view .pill { margin-left: 6px; }
+.admin-view .allowlist { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-view .allow-entry { display: inline-flex; align-items: center; gap: 4px; margin-left: 0; }
+.admin-view .allow-entry button {
+  background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 13px;
+}
+.admin-view .allow-entry button:hover { color: var(--text); }
+.admin-view form input[type=text] { width: 300px; }

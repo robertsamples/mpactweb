@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from .. import config, jobs, storage
-from ..deps import get_file, get_run, get_session
+from ..deps import check_storage, get_file, get_role, get_run, get_session, limits
 from ..schemas import AnalysisSettings, JobStatus, RunLabel, RunRequest
 
 router = APIRouter(prefix='/api/runs', tags=['runs'])
@@ -46,7 +46,8 @@ def list_runs(session: storage.Session = Depends(get_session)):
 
 
 @router.post('')
-async def create_run(payload: RunRequest, session: storage.Session = Depends(get_session)):
+async def create_run(payload: RunRequest, session: storage.Session = Depends(get_session),
+                     role: str = Depends(get_role)):
     """Copy the selected library files into a fresh run and queue it.
 
     The copy is what makes a run reproducible and self-contained: the
@@ -63,6 +64,16 @@ async def create_run(payload: RunRequest, session: storage.Session = Depends(get
     active = jobs.manager.active_for(session.id)
     if active is not None:
         return _already_active(active)
+
+    max_runs, _ = limits(role)
+    if max_runs:
+        kept = len(session.runs())
+        if kept >= max_runs:
+            raise HTTPException(
+                status_code=409,
+                detail=f'this workspace keeps at most {max_runs} analyses and has {kept}; '
+                       'delete one from Runs to start another')
+    await run_in_threadpool(check_storage, session, role)
 
     settings = payload.settings
     if settings.blnkfltr and not settings.blnkgrp:

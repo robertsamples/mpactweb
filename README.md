@@ -17,6 +17,11 @@ single one is edited. The web layer builds the pipeline's parameters, runs
 it, and turns its output files into JSON for the browser — it never
 reimplements the science.
 
+- **App:** <https://app.mpactms.org>
+- **User documentation:** <https://docs.mpactms.org>, built from `docs/` and
+  `mkdocs.yml` with [Zensical](https://zensical.org) (`zensical serve` to
+  preview).
+
 ---
 
 ## Quick start
@@ -225,7 +230,7 @@ All optional; every value has a working default.
 | `MPACT_PLOT_CACHE_MB` | `64` | Memory for finished plot payloads, so reopening a tab does not recompute it |
 | `MPACT_FRAGDB_CACHE_ENTRIES` | `6` | Parsed fragment databases kept in memory, one per recently viewed run |
 | `MPACT_SESSION_COOKIE_SECURE` | `false` | Turn on behind HTTPS |
-| `MPACT_AUTH` | `none` | `none`, `code` or `users` (see below) |
+| `MPACT_AUTH` | `none` | `none`, `code`, `users` or `email` (see below) |
 | `MPACT_ACCESS_CODE` | | The shared code(s), comma-separated, when `MPACT_AUTH=code` (not case-sensitive) |
 | `MPACT_USERS_FILE` | `<data root>/users.txt` | Accounts, when `MPACT_AUTH=users` |
 | `MPACT_AUTH_MAX_AGE_SECONDS` | `1209600` | How long a sign-in lasts (14 days) |
@@ -242,7 +247,7 @@ directory to hide the demo panel altogether.
 
 Off by default, which is right for `localhost` and wrong for anything with a
 public address: uploading a peak table and starting an analysis both spend
-real CPU and disk. Three modes:
+real CPU and disk. Four modes:
 
 **`none`** (default). No sign-in. Sessions are cookie-scoped directories, the
 same trust model as the desktop app on a shared workstation.
@@ -266,6 +271,45 @@ python scripts/mpact_users.py list
 ```
 
 Passwords are hashed with scrypt; the file holds hashes, never passwords.
+
+**`email`** Anyone can open an account with their email address; there are
+no passwords. Signing in sends a six-digit code to the address (valid for 15
+minutes, five guesses, a few per hour), and the first sign-in creates the
+account, so there is no separate sign-up or "forgot password". Each account
+has its own workspace and a role:
+
+- *internal*: an address at `MPACT_INTERNAL_DOMAINS` (`smith.edu` by
+  default, subdomains included) or on the collaborator list. Sees the class
+  datasets (the CHM350 demos); no quota.
+- *external*: everyone else. Sees the public demo and their own work, within
+  `MPACT_EXTERNAL_MAX_RUNS` analyses and `MPACT_EXTERNAL_MAX_STORAGE_MB`.
+- *blocked*: cannot sign in.
+
+The addresses in `MPACT_ADMIN_EMAILS` get an **Accounts** page: sign-ups by
+email domain (the only thing recorded about where people are), each account's
+role (automatic from the address, or overridden), its storage, and the
+collaborator list (addresses or whole `@domain`s made internal). With
+`MPACT_SIGNUP=approval`, outside addresses wait for an administrator to
+approve them, and administrators are emailed when one signs up.
+
+The codes are sent from an ordinary mail account over SMTP:
+
+```bash
+export MPACT_AUTH=email
+export MPACT_ADMIN_EMAILS=you@smith.edu
+export MPACT_SITE_URL=https://app.mpactms.org
+export MPACT_SMTP_HOST=smtp.gmail.com        # Google accounts; smtp.office365.com for Microsoft
+export MPACT_SMTP_PORT=587
+export MPACT_SMTP_USER=you@smith.edu
+export MPACT_SMTP_PASSWORD='app password'    # see below
+export MPACT_MAIL_FROM='MPACT <you@smith.edu>'
+```
+
+For a Google account the password is an *app password* (Google Account >
+Security > 2-Step Verification > App passwords), which needs 2-step
+verification on and may need your IT department to allow it. Microsoft 365
+needs "SMTP AUTH" enabled for the mailbox. Port 587 is used because cloud
+providers (Hetzner included) block 25 and 465 on new servers.
 Login cookies are HMAC-signed under `MPACT_SECRET_KEY`, which is generated
 into the data root on first start if you don't set one. Set it explicitly if
 you run more than one instance, or everyone is signed out when they move

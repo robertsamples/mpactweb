@@ -12,6 +12,9 @@ API, in three modes:
            tell the room one code, everyone gets their own workspace.
 ``users``  named accounts from a password file, each with its own persistent
            workspace that follows them between browsers and machines.
+``email``  accounts anyone can open with their email address, signing in
+           with a code sent to it (accounts.py), split into internal and
+           external users by the address's domain.
 
 Passwords are hashed with :func:`hashlib.scrypt` -- memory-hard, in the
 standard library, no dependency to audit. The login cookie is a value signed
@@ -40,7 +43,7 @@ from . import config
 # one says who you are, the other says which workspace you are looking at.
 AUTH_COOKIE = 'mpact_auth'
 
-MODES = ('none', 'code', 'users')
+MODES = ('none', 'code', 'users', 'email')
 
 # scrypt work factors. n=2**14 with r=8 is the usual interactive setting: a
 # verification costs ~100 ms and ~16 MB, which is nothing for a login and a
@@ -229,6 +232,8 @@ def check_login(username: str, password: str) -> str:
     current = mode()
     if current == 'none':
         raise AuthError('this server does not require a login')
+    if current == 'email':
+        raise AuthError('this server signs in with a code sent to your email address')
 
     if current == 'code':
         # Comma-separated, so one server can hand different groups (a class,
