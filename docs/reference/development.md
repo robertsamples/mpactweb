@@ -59,8 +59,10 @@ zensical serve        # live preview at http://localhost:8000
 zensical build        # static site in site/
 ```
 
-On mpactms.org the site is built into the Caddy image
-(`deploy/caddy.Dockerfile`) and served at docs.mpactms.org.
+docs.mpactms.org is a Cloudflare Pages project connected to the GitHub
+repository. Every push to `main` runs
+`pip install zensical==0.0.57 && zensical build` and publishes `site/`, so
+merging a docs change publishes it.
 
 Screenshots are taken from the PTY087I2 demo at a 1440 × 900 window, at 2×
 pixel density, and saved at 1800 pixels wide.

@@ -1,20 +1,12 @@
-# The public mpactms.org sites besides the app itself, imported by the
-# Caddyfile. A different deployment can delete this file; the app block in the
-# Caddyfile does not depend on it.
+# The mpactms.org landing page, imported by the Caddyfile. A different
+# deployment can delete this file; the app block in the Caddyfile does not
+# depend on it.
 #
-# The documentation and the landing page are built into the Caddy image
-# (deploy/caddy.Dockerfile), so `docker compose build caddy` refreshes both.
-
-docs.mpactms.org {
-	encode zstd gzip
-	root * /srv/docs
-	file_server
-	header {
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		-Server
-	}
-}
+# The documentation is not served from here: docs.mpactms.org is Cloudflare
+# Pages, built from docs/ on every push to main.
+#
+# The landing page is built into the Caddy image (deploy/caddy.Dockerfile), so
+# `docker compose build caddy` picks up changes to deploy/landing/.
 
 mpactms.org, www.mpactms.org {
 	encode zstd gzip

@@ -30,8 +30,8 @@ services:
     restart: unless-stopped
 
   caddy:
-    # Stock Caddy plus the built documentation and landing page
-    # (deploy/caddy.Dockerfile). Their site blocks are in deploy/sites/.
+    # Stock Caddy plus the landing page (deploy/caddy.Dockerfile). Site blocks
+    # other than the app's are in deploy/sites/.
     build:
       context: ..
       dockerfile: deploy/caddy.Dockerfile

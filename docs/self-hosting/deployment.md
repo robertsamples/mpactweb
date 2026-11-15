@@ -50,10 +50,10 @@ cause is DNS not yet pointing at the machine.
 ## Extra sites
 
 `deploy/Caddyfile` serves the app at `MPACT_SITE_ADDRESS` and imports any
-`deploy/sites/*.caddy` files for other hostnames. mpactms.org uses this for the
-documentation and the landing page, which are built into the Caddy image by
-`deploy/caddy.Dockerfile`. Delete `deploy/sites/mpactms.org.caddy` on your own
-server, or replace it with your own hostnames.
+`deploy/sites/*.caddy` files for other hostnames. mpactms.org uses this for its
+landing page, which is built into the Caddy image by `deploy/caddy.Dockerfile`.
+Delete `deploy/sites/mpactms.org.caddy` on your own server, or replace it with
+your own hostnames.
 
 ## Operating it
 
