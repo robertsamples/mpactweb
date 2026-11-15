@@ -3,6 +3,7 @@
 
     server/data/npatlas_taxonomy.tsv   genus -> phylum/class/order/family (NCBI)
     server/data/siderite_inchikeys.txt InChIKey first blocks of every SIDERITE structure
+    server/data/npatlas_chemistry.tsv  warheads + conjugated size per atlas compound
 
 Usage::
 
@@ -10,7 +11,9 @@ Usage::
         --siderite SIDERITE_unique_structures_20251231.xlsx
 
 ``--taxdump`` is NCBI's https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz.
-Either step can be run on its own.
+``--chemistry`` reads the installed atlas; rerun it after changing the
+warhead patterns in server/app/plotdata/hits.py (a stale table is ignored).
+Each step can be run on its own.
 """
 
 import argparse
@@ -114,18 +117,45 @@ def build_siderite(path):
     print(f'{out}: {len(keys)} structures')
 
 
+def build_chemistry():
+    sys.path.insert(0, str(REPO_ROOT / 'server'))
+    from app.plotdata import feature, hits
+    atlas = feature.combined_atlas()
+    out = DATA / 'npatlas_chemistry.tsv'
+    Chem = hits._rdkit()
+    patterns = hits._patterns()
+    with open(out, 'w', encoding='utf-8', newline='\n') as handle:
+        handle.write(f'# {hits.chemistry_signature()}\n')
+        handle.write('compound_id\tsmiles_hash\twarheads\tconjugated\n')
+        for compound_id, smiles in atlas['compound_smiles'].fillna('').astype(str).items():
+            molecule = hits.standardize(Chem.MolFromSmiles(smiles)) if smiles else None
+            labels, conjugated = [], 0
+            if molecule is not None:
+                for label, pattern in patterns:
+                    if label not in labels and molecule.HasSubstructMatch(pattern):
+                        labels.append(label)
+                conjugated = hits.conjugated_size(molecule)
+            handle.write(f'{int(compound_id)}\t{hits.smiles_hash(smiles)}\t'
+                         f'{"|".join(labels)}\t{conjugated}\n')
+    print(f'{out}: {len(atlas)} compounds')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--taxdump', help='NCBI taxdump.tar.gz')
     parser.add_argument('--siderite', help='SIDERITE unique structures .xlsx')
+    parser.add_argument('--chemistry', action='store_true',
+                        help='precompute warheads and conjugation for the installed atlas')
     args = parser.parse_args()
-    if not (args.taxdump or args.siderite):
-        parser.error('nothing to do; pass --taxdump and/or --siderite')
+    if not (args.taxdump or args.siderite or args.chemistry):
+        parser.error('nothing to do; pass --taxdump, --siderite and/or --chemistry')
     if args.taxdump:
         build_taxonomy(args.taxdump)
     if args.siderite:
         build_siderite(args.siderite)
+    if args.chemistry:
+        build_chemistry()
     return 0
 
 
