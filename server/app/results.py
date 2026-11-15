@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import config
+from . import config, storage
 
 
 class Memo:
@@ -280,6 +280,17 @@ class RunResults:
 
     def meta(self):
         return self._json('runmeta.json', {})
+
+    @property
+    def flags_path(self):
+        """Beside the run's request, not among its outputs: flags are the
+        user's marks on a run, not something the pipeline wrote."""
+        return self.run.root / 'flags.json'
+
+    def flags(self):
+        """``{compound id: '#rrggbb'}`` -- the features flagged in this run."""
+        flags = storage.read_json(self.flags_path, default={})
+        return flags if isinstance(flags, dict) else {}
 
     def groupsets(self):
         """The Plot Feature Sets used by this run, with their ion lists."""

@@ -48,8 +48,7 @@ function render2d(surface, payload, context, options) {
     message(surface, 'No features matched the current feature sets.');
     return;
   }
-  const selected = context.selectedFeature;
-  const point = selected ? findPoint(payload, selected) : null;
+  const points = selectedPoints(payload, context.selectedFeatures);
 
   const fresh = !drawSelectable(surface, [payload, options.grid], () => {
     const allX = payload.series.flatMap((series) => series.x || []);
@@ -75,20 +74,46 @@ function render2d(surface, payload, context, options) {
       }),
       config: imageFormat(payload.plot),
     };
-  }, point);
+  }, points, { flags: flaggedPoints(payload, context.flags) });
 
   // The click handler closes over the payload, so it only needs rebinding
   // when the plot itself was rebuilt.
   if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }
 
-/** Locate a compound's coordinates in a payload, for the highlight marker. */
-function findPoint(payload, compound) {
+/** Coordinates and colour of every flagged compound in a payload. `flags`
+ *  is a Map of compound -> colour. */
+function flaggedPoints(payload, flags) {
+  const points = [];
+  if (!flags || !flags.size) return points;
   for (const series of payload.series) {
-    const index = series.ids.indexOf(compound);
-    if (index !== -1) return { x: series.x[index], y: series.y[index] };
+    const list = series.ids || [];
+    for (let i = 0; i < list.length; i += 1) {
+      const colour = flags.get(list[i]);
+      if (!colour) continue;
+      const point = { x: series.x[i], y: series.y[i], colour };
+      if (series.z) point.z = series.z[i];
+      points.push(point);
+    }
   }
-  return null;
+  return points;
+}
+
+/** Coordinates of every selected compound in a payload, for the highlight
+ *  markers. `ids` is the selection as a Set. */
+function selectedPoints(payload, ids) {
+  const points = [];
+  if (!ids || !ids.size) return points;
+  for (const series of payload.series) {
+    const list = series.ids || [];
+    for (let i = 0; i < list.length; i += 1) {
+      if (!ids.has(list[i])) continue;
+      const point = { x: series.x[i], y: series.y[i] };
+      if (series.z) point.z = series.z[i];
+      points.push(point);
+    }
+  }
+  return points;
 }
 
 export function mzrt(surface, payload, context) {
@@ -128,24 +153,13 @@ export function quality(surface, payload, context) {
   });
 }
 
-/** The selected feature's coordinates in a 3D payload. */
-function findPoint3d(payload, compound) {
-  for (const series of payload.series) {
-    const index = (series.ids || []).indexOf(compound);
-    if (index !== -1) {
-      return { x: series.x[index], y: series.y[index], z: series.z[index] };
-    }
-  }
-  return null;
-}
-
 export function fc3d(surface, payload, context) {
   if (!payload.series.some((series) => series.count > 0)) {
     message(surface, 'No features with a fold change to plot.');
     return;
   }
-  const selected = context.selectedFeature;
-  const point = selected ? findPoint3d(payload, selected) : null;
+  const points = selectedPoints(payload, context.selectedFeatures)
+    .filter((point) => point.z !== null && point.z !== undefined);
 
   // Scene axes ignore `rangemode`, unlike their 2D counterparts -- setting it
   // there left retention time starting at -0.29 and m/z at -56. The limits
@@ -185,7 +199,7 @@ export function fc3d(surface, payload, context) {
                  range: zeroTo((series) => series.z || []) },
       },
     }),
-  }), point, { marker3d: true });
+  }), points, { marker3d: true, flags: flaggedPoints(payload, context.flags) });
 
   if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }

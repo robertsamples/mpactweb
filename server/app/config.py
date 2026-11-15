@@ -94,6 +94,9 @@ def _resolve():
         # millions.
         'MAX_SCATTER_POINTS': _int('MPACT_MAX_SCATTER_POINTS', 200_000),
         'MAX_HEATMAP_CELLS': _int('MPACT_MAX_HEATMAP_CELLS', 2_000_000),
+        # Rows drawn in the heatmap; beyond it neighbouring features (in the
+        # clustered order) are averaged for display. See plotdata/heatmap.py.
+        'MAX_HEATMAP_ROWS': _int('MPACT_MAX_HEATMAP_ROWS', 1500),
 
         # In-memory caches (results.py, routers/results.py). The table
         # cache holds parsed output CSVs; the plot cache holds finished plot

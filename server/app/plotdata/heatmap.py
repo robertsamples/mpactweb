@@ -96,6 +96,20 @@ def heatmap(results, options=None):
     row_order, col_order = row_dendro['order'], col_dendro['order']
     reordered = matrix[np.ix_(row_order, col_order)]
 
+    # A plot is a few hundred pixels tall. Past that many features each row
+    # is a fraction of a pixel, and sending them all only makes the browser
+    # draw (and alias) cells nobody can see. Neighbouring rows -- neighbours
+    # in the clustered order, so similar profiles -- are averaged into bins of
+    # ``bin_size`` instead. ``features`` and the row dendrogram still cover
+    # every feature: only the drawn matrix is reduced.
+    rows_total = reordered.shape[0]
+    cap = max(1, int(config.MAX_HEATMAP_ROWS))
+    bin_size = int(np.ceil(rows_total / cap)) if rows_total > cap else 1
+    if bin_size > 1:
+        edges = np.arange(0, rows_total, bin_size)
+        sizes = np.diff(np.append(edges, rows_total))
+        reordered = np.add.reduceat(reordered, edges, axis=0) / sizes[:, None]
+
     feature_ids = [str(v) for v in frame.index]
     display = (labelutil.display_labels(raw_header, raw_columns, view)
                if use_names else raw_columns)
@@ -120,4 +134,7 @@ def heatmap(results, options=None):
         'row_dendrogram': row_dendro,
         'col_dendrogram': col_dendro,
         'shape': [int(matrix.shape[0]), int(matrix.shape[1])],
+        # z has ceil(features / bin_size) rows; row i covers features
+        # [i * bin_size, (i + 1) * bin_size).
+        'bin_size': bin_size,
     }

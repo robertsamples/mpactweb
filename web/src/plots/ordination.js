@@ -77,7 +77,8 @@ function scores(surface, payload, context) {
       shapes,
     }),
     config: imageFormat('ordination'),
-  }), point);
+    // Sample markers are larger than feature markers, so the disc is too.
+  }), point, { size: 14 });
 
   // Selecting a point here selects an injection/sample, not a feature -- it
   // is named in the status bar rather than driving the feature rail, but it
@@ -98,7 +99,6 @@ function loadings(surface, payload, context) {
     return;
   }
 
-  const selected = context.selectedFeature;
   const traces = [{
     type: 'scattergl',
     mode: 'markers+text',
@@ -113,7 +113,13 @@ function loadings(surface, payload, context) {
     showlegend: false,
   }];
 
-  const hit = payload.loadings.find((item) => item.id === selected);
+  const flagged = context.flags && context.flags.size
+    ? payload.loadings.filter((item) => context.flags.has(item.id))
+      .map((item) => ({ x: item.x, y: item.y, colour: context.flags.get(item.id) }))
+    : [];
+  const picked = context.selectedFeatures;
+  const hits = picked && picked.size
+    ? payload.loadings.filter((item) => picked.has(item.id)) : [];
 
   const fresh = !drawSelectable(surface, [payload], () => ({
     traces,
@@ -132,7 +138,7 @@ function loadings(surface, payload, context) {
                zeroline: true, zerolinecolor: '#999' },
     }),
     config: imageFormat('ordination-loadings'),
-  }), hit || null);
+  }), hits, { flags: flagged });
 
   if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
 }

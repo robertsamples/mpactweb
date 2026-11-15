@@ -13,6 +13,10 @@
 
 const STORAGE_KEY = 'mpact.setup.v1';
 
+function savedShowFlags() {
+  try { return localStorage.getItem('mpact.flags.show') !== '0'; } catch { return true; }
+}
+
 const initial = () => ({
   health: null,
   demo: null,
@@ -28,7 +32,16 @@ const initial = () => ({
   run: null,                // {run_id, state, stage, ...}
   runs: [],
   catalogue: null,          // /plots response for the active run
+  // The selection. `selectedFeatures` is every selected compound, in the
+  // order they were picked; `selectedFeature` is the focused one of them --
+  // the one the details rail and status bar describe. Use `selection` (below)
+  // to change more than one; setting `selectedFeature` alone is a plain
+  // single selection.
   selectedFeature: null,
+  selectedFeatures: [],
+  runLabel: '',             // label for the next run, from the Run view
+  flags: {},                // flagged features of the active run: compound -> '#rrggbb'
+  showFlags: savedShowFlags(),   // mark flagged features on the plots
   selectedSample: null,
   selectedSampleGroup: null,   // biological group of the picked injection
   hitFilter: null,          // active Feature Info hit filter spec, or null
@@ -48,6 +61,15 @@ class Store {
 
   /** Merge `patch` and notify every affected topic once. */
   set(patch) {
+    // Setting the focused feature on its own is a single selection: the set
+    // follows it. That keeps every "select this one" caller correct without
+    // each having to know there is a set.
+    if ('selectedFeature' in patch && !('selectedFeatures' in patch)) {
+      const only = patch.selectedFeature ? [patch.selectedFeature] : [];
+      const current = this.data.selectedFeatures;
+      const same = current.length === only.length && current[0] === only[0];
+      patch = { ...patch, selectedFeatures: same ? current : only };
+    }
     const changed = [];
     for (const [key, value] of Object.entries(patch)) {
       if (this.data[key] !== value) changed.push(key);
@@ -151,3 +173,57 @@ const PALETTE = ['#d62728', '#1f77b4', '#2ca02c', '#9467bd', '#ff7f0e',
 export const nextColour = (index) => PALETTE[index % PALETTE.length];
 
 export const store = new Store();
+
+/* Multiple selection.
+ *
+ * Every view reads the same two store keys, so a set built by Ctrl-clicking
+ * table rows shows on the volcano plot and a lasso on the volcano plot shows
+ * in the table. The focused feature is always a member of the set. */
+let idSet = { list: null, set: new Set() };
+
+export const selection = {
+  /** Selected ids, in the order they were picked. */
+  ids: () => store.get('selectedFeatures'),
+
+  /** The same as a Set, rebuilt only when the selection changes. */
+  asSet() {
+    const list = store.get('selectedFeatures');
+    if (idSet.list !== list) idSet = { list, set: new Set(list) };
+    return idSet.set;
+  },
+
+  count: () => store.get('selectedFeatures').length,
+
+  /** Replace the selection. `focus` names the focused feature; by default
+   *  the current one if it is still selected, otherwise the last id. */
+  set(ids, focus) {
+    const unique = [...new Set(ids)];
+    const current = store.get('selectedFeature');
+    const wanted = focus && unique.includes(focus) ? focus
+      : unique.includes(current) ? current : unique[unique.length - 1];
+    store.set({ selectedFeatures: unique, selectedFeature: wanted ?? null });
+  },
+
+  /** Add ids to the selection, focusing `focus` (default: the last added). */
+  add(ids, focus) {
+    this.set([...store.get('selectedFeatures'), ...ids], focus ?? ids[ids.length - 1]);
+  },
+
+  /** Ctrl-click: in if it was out, out if it was in. */
+  toggle(id) {
+    const list = store.get('selectedFeatures');
+    if (list.includes(id)) this.set(list.filter((item) => item !== id));
+    else this.set([...list, id], id);
+  },
+
+  remove(id) { this.set(store.get('selectedFeatures').filter((item) => item !== id)); },
+
+  /** Move the focus to another member without changing the set. */
+  focus(id) {
+    if (this.asSet().has(id)) {
+      store.set({ selectedFeature: id, selectedFeatures: store.get('selectedFeatures') });
+    }
+  },
+
+  clear() { store.set({ selectedFeature: null }); },
+};

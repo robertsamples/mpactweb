@@ -589,9 +589,28 @@ table.features .range-filter input { width: 50%; min-width: 0; padding: 2px 3px;
   appearance: textfield; -moz-appearance: textfield; }
 table.features .range-filter input::-webkit-inner-spin-button,
 table.features .range-filter input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-/* Compound ids are long; the other columns are numbers and stay narrow. */
-table.features th:nth-child(1), table.features td:nth-child(1) { width: 20%; }
-table.features th:nth-child(5), table.features td:nth-child(5) { width: 18%; }
+/* Column widths, set on the heading cells (the table's layout is fixed, so
+   the first row decides). Compound ids and set lists are long; the numbers
+   share what is left, and the two leading marks take only what they need. */
+table.features th.col-0 { width: 19%; }
+table.features th.col-4 { width: 16%; }
+table.features th.col-sel { width: 30px; }
+table.features th.col-flag { width: 36px; }
+table.features th.col-sel, table.features td.col-sel,
+table.features th.col-flag, table.features td.col-flag {
+  text-align: center; padding-left: 1px; padding-right: 1px; text-overflow: clip;
+}
+/* The filter row pads its cells more than this; not under these two. */
+table.features thead tr:nth-child(2) th.col-sel,
+table.features thead tr:nth-child(2) th.col-flag { padding-left: 1px; padding-right: 1px; }
+/* The Flag filter's button, narrowed to its column: just the count and caret. */
+table.features thead th.col-flag .cat-button { padding: 2px 2px; gap: 1px; }
+table.features thead th.col-flag .cat-caret { font-size: 8px; }
+/* Headings line up with what is under them: numbers are right-aligned. */
+table.features th.num { text-align: right; }
+table.features td.col-sel { color: var(--accent); font-weight: 700; cursor: pointer; }
+table.features td.col-flag { cursor: pointer; }
+table.features td.col-sel:hover, table.features td.col-flag:hover { background: rgba(255,255,255,0.06); }
 
 /* Category (Sets) column filter: a button that opens a checkbox popup, the
    web form of the desktop's checkable-action menu. A multi-select listbox
@@ -644,12 +663,16 @@ table.features th:nth-child(5), table.features td:nth-child(5) { width: 18%; }
 .source-toggle .btn:last-child { border-radius: 0 var(--radius) var(--radius) 0; border-left: none; }
 .matches-body { display: flex; flex-direction: column; gap: 8px; }
 .match-nav .btn { padding: 1px 9px; line-height: 1.3; }
+/* A constant height, so stepping from hit to hit -- each drawing a different
+   size, and the box empty while the next one loads -- never changes the
+   rail's length under you. (At the bottom of the rail a shorter box pulled
+   the whole panel up a step.) */
 .matches-panel .structure {
   background: #ffffff; border-radius: var(--radius); padding: 6px;
-  min-height: 150px; display: flex; align-items: center; justify-content: center;
+  height: 204px; display: flex; align-items: center; justify-content: center;
 }
 .matches-panel .structure img { max-height: 190px; max-width: 100%; }
-.match-caption { text-align: center; font-size: 12px; }
+.match-caption { text-align: center; font-size: 12px; min-height: 6.2em; }
 .match-caption .match-title { font-weight: 600; color: var(--text); margin-bottom: 2px; }
 .match-list {
   max-height: 168px; overflow: auto;
@@ -957,3 +980,102 @@ dialog.sketcher:focus, dialog.sketcher:focus-visible { outline: none; }
 .match-caption .match-tags { color: var(--warn); margin-top: 2px; }
 .match-caption .match-tags:empty { display: none; }
 .match-row.filtered-out { opacity: .45; }
+
+/* --- multiple selection -------------------------------------------------- */
+
+/* Rows are picked like files: the focused one (the feature the details rail
+   describes) is marked among the selected. */
+table.features tbody tr { cursor: default; }
+table.features tbody tr.selected.focused {
+  background: #35504b; box-shadow: inset 3px 0 0 var(--accent);
+}
+table.features tbody tr.pending td { color: var(--muted); }
+
+/* The selection, at the top of the details rail when it is more than one. */
+.rail-selection {
+  border-bottom: 1px solid var(--border); padding: 8px 10px 10px; flex: 0 0 auto;
+}
+.rail-selection .selection-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.rail-selection .selection-head strong { font-size: 12px; }
+.rail-selection .selection-list {
+  max-height: 150px; overflow-y: auto; background: #1c1c1c;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.rail-selection .selection-item { display: flex; align-items: stretch; border-bottom: 1px solid #262626; }
+.rail-selection .selection-item:last-child { border-bottom: none; }
+.rail-selection .selection-item.active { background: #2b3a38; }
+.rail-selection .selection-item button {
+  background: none; border: none; color: var(--text); font: inherit; font-size: 12px;
+  cursor: pointer; padding: 3px 7px;
+}
+.rail-selection .selection-name {
+  flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rail-selection .selection-item button:hover { color: #fff; background: var(--panel); }
+.rail-selection .selection-remove { color: var(--muted); flex: 0 0 auto; }
+.rail-selection .selection-more { padding: 3px 7px; font-size: 12px; }
+
+/* Group buckets: picked groups, and the row that moves them. */
+.bucket li { user-select: none; }
+.move-row .pick-note { font-size: 12px; }
+
+/* The label for the next run. */
+.run-label { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; }
+.run-label input { flex: 1; max-width: 460px; }
+
+/* --- flags ---------------------------------------------------------------- */
+
+/* A flag: a disc of the flag's colour with a dark rim, like its plot marker. */
+.flag-dot {
+  display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+  border: 1px solid #000; box-shadow: 0 0 0 1px rgba(255,255,255,0.22);
+  vertical-align: middle;
+}
+.flag-controls { display: inline-flex; align-items: center; gap: 5px; }
+input.flag-colour {
+  -webkit-appearance: none; appearance: none;
+  width: 20px; height: 20px; padding: 0; flex: 0 0 20px;
+  border: 1px solid #000; border-radius: 50%; background: none; cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.22); overflow: hidden;
+}
+input.flag-colour::-webkit-color-swatch-wrapper { padding: 0; }
+input.flag-colour::-webkit-color-swatch { border: none; border-radius: 50%; }
+input.flag-colour::-moz-color-swatch { border: none; border-radius: 50%; }
+
+.rail-selection .selection-flag { margin-bottom: 6px; }
+.rail-selection .selection-flag .btn { padding: 2px 8px; font-size: 12px; }
+
+/* The focused feature's flag, beside its name in the rail. */
+.details-rail .rail-head button.flag-toggle {
+  margin-left: auto; width: 20px; height: 20px; padding: 0; flex: 0 0 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; border-radius: 50%; cursor: pointer;
+}
+.details-rail .rail-head button.flag-toggle:hover { border-color: var(--border); background: var(--panel-2); }
+.details-rail .rail-head button.flag-toggle .flag-dot { border-style: dashed; border-color: var(--muted); box-shadow: none; }
+.details-rail .rail-head button.flag-toggle.flagged .flag-dot {
+  border-style: solid; border-color: #000; box-shadow: 0 0 0 1px rgba(255,255,255,0.22);
+}
+.details-rail .rail-head button.flag-toggle + button { margin-left: 4px; }
+
+/* The Sel and Flag filters, in the filter row under their headings. */
+table.features thead input.sel-only {
+  width: 14px; height: 14px; margin: 0; padding: 0; vertical-align: middle;
+  accent-color: var(--accent); cursor: pointer;
+}
+.flag-filter .cat-button { padding: 2px 3px; gap: 2px; }
+.flag-filter .cat-button .cat-label { text-align: center; }
+.flag-menu { min-width: 120px; }
+.flag-menu .tri-option .muted { margin-left: auto; padding-left: 10px; font-size: 11px; }
+table.features tbody tr.empty-row td {
+  text-align: center; color: var(--muted); padding: 18px 10px; white-space: normal;
+}
+table.features tbody tr.empty-row:hover { background: none; }
+
+/* Holds the rail's height while a new feature's sections load (see
+   detailsrail.js); must not shrink, or it holds nothing. */
+.details-rail .rail-hold { flex: none; margin-top: -7px; }
+/* No scroll anchoring here: the rail restores its own position across
+   features, and the browser's anchoring then moved it again as each section
+   above filled in, so it crept down a little further with every feature. */
+.details-rail .rail-sections { overflow-anchor: none; }

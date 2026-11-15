@@ -473,3 +473,220 @@ def test_runs_are_listed_with_their_submission_time(client, completed_run):
     request = client.get(f'/api/runs/{completed_run}/request').json()
     assert entry['created_at'] == request['created_at']
     assert entry['created_at'] <= entry['started_at'] <= entry['finished_at']
+
+
+def _export(client, run_id, **options):
+    import csv
+    import io
+
+    response = client.post(f'/api/runs/{run_id}/features/export', json=options)
+    assert response.status_code == 200, response.text
+    assert response.headers['content-type'].startswith('text/csv')
+    assert 'attachment' in response.headers['content-disposition']
+    rows = list(csv.reader(io.StringIO(response.content.decode('utf-8-sig'))))
+    return rows[0], rows[1:], response
+
+
+def test_the_table_is_served_a_page_at_a_time(client, completed_run):
+    """The browser gets every id once, and rows as they scroll into view."""
+    options = {'sort': 'm/z', 'include_filtered': True}
+    whole = client.post(f'/api/runs/{completed_run}/features', json={**options, 'limit': 0}).json()
+    assert 'ids' not in whole, 'ids are only sent when asked for'
+
+    first = client.post(f'/api/runs/{completed_run}/features',
+                        json={**options, 'with_ids': True, 'offset': 0, 'limit': 50}).json()
+    assert first['total'] == whole['total'] > 200
+    assert first['ids'] == [row[0] for row in whole['rows']]
+    assert first['rows'] == whole['rows'][:50]
+
+    later = client.post(f'/api/runs/{completed_run}/features',
+                        json={**options, 'offset': 150, 'limit': 50}).json()
+    assert later['rows'] == whole['rows'][150:200]
+    assert [row[0] for row in later['rows']] == first['ids'][150:200]
+
+    past_the_end = client.post(f'/api/runs/{completed_run}/features',
+                               json={**options, 'offset': whole['total'] + 10, 'limit': 50}).json()
+    assert past_the_end['rows'] == [] and past_the_end['total'] == whole['total']
+
+
+def test_pages_follow_the_sort_and_filters_they_were_asked_with(client, completed_run):
+    descending = {'sort': 'max', 'descending': True,
+                  'filters': {'m/z': {'min': 300, 'max': 700}}}
+    whole = client.post(f'/api/runs/{completed_run}/features', json={**descending, 'limit': 0}).json()
+    page = client.post(f'/api/runs/{completed_run}/features',
+                       json={**descending, 'offset': 10, 'limit': 20}).json()
+    assert page['rows'] == whole['rows'][10:30]
+    ascending = client.post(f'/api/runs/{completed_run}/features',
+                            json={**descending, 'descending': False, 'offset': 0, 'limit': 5}).json()
+    assert ascending['rows'] != whole['rows'][:5], 'a different order is a different view'
+
+
+def test_the_listed_features_export_as_a_csv(client, completed_run):
+    """The export is the table on screen: the same rows in the same order,
+    with every per-feature column and each feature's best match."""
+    view = {'sort': 'm/z', 'descending': True, 'filters': {'m/z': {'min': 400, 'max': 600}}}
+    table = client.post(f'/api/runs/{completed_run}/features',
+                        json={**view, 'with_ids': True, 'limit': 0}).json()
+    header, rows, response = _export(client, completed_run, **view)
+    assert response.headers['content-disposition'].endswith('_features.csv"')
+    assert header[0] == 'Compound' and 'm/z' in header
+    assert [row[0] for row in rows] == table['ids']
+    assert all(len(row) == len(header) for row in rows)
+    masses = [float(row[header.index('m/z')]) for row in rows]
+    assert all(400 <= mass <= 600 for mass in masses)
+    assert masses == sorted(masses, reverse=True)
+
+
+def test_the_export_names_each_features_best_match(client, completed_run):
+    if not client.get('/api/health').json()['npatlas']:
+        pytest.skip('NPAtlas is not installed')
+    header, rows, _ = _export(client, completed_run, sort='m/z')
+    for name in ('ms1_top_match', 'ms1_top_formula', 'ms1_top_ppm', 'ms1_top_organism'):
+        assert name in header
+    matched = [row for row in rows if row[header.index('ms1_top_match')]]
+    assert matched, 'no feature in the run has a match to report'
+    params = client.get(f'/api/runs/{completed_run}/plots').json()['params']
+    for row in matched[:5]:
+        ppm = float(row[header.index('ms1_top_ppm')])
+        assert 0 <= ppm < float(params['ppmthresh'])
+        # The same hit the details rail lists first for this feature.
+        listed = client.get(f'/api/runs/{completed_run}/feature/matches',
+                            params={'compound': row[0]}).json()['matches']
+        assert listed, f'{row[0]} is exported with a match but lists none'
+        assert abs(float(listed[0]['ppm']) - ppm) < 0.01
+        assert row[header.index('ms1_top_match')] in {m['compound_name'] for m in listed
+                                                      if abs(float(m['ppm']) - ppm) < 0.01}
+    # Under a hit filter the best match is the best one meeting it.
+    filtered_header, filtered_rows, _ = _export(
+        client, completed_run, sort='m/z', hit_filter={'name': 'mycin'})
+    assert 0 < len(filtered_rows) < len(rows)
+    at = filtered_header.index('ms1_top_match')
+    assert all('mycin' in row[at].lower() or not row[at] for row in filtered_rows)
+
+
+def test_selected_features_export_whether_or_not_they_passed_filtering(client, completed_run):
+    everything = client.post(f'/api/runs/{completed_run}/features',
+                             json={'limit': 0, 'include_filtered': True, 'with_ids': True}).json()
+    surviving = set(client.post(f'/api/runs/{completed_run}/features',
+                                json={'limit': 0, 'with_ids': True}).json()['ids'])
+    removed = next(compound for compound in everything['ids'] if compound not in surviving)
+    kept = sorted(surviving)[:2]
+    header, rows, response = _export(client, completed_run, sort='m/z', include_filtered=True,
+                                     ids=[removed, *kept, 'not-in-this-run'])
+    assert response.headers['content-disposition'].endswith('_selected.csv"')
+    assert sorted(row[0] for row in rows) == sorted([removed, *kept])
+    masses = [float(row[header.index('m/z')]) for row in rows]
+    assert masses == sorted(masses), 'selected features come out in the requested order'
+
+    assert client.post(f'/api/runs/{completed_run}/features/export',
+                       json={'ids': 'all of them'}).status_code == 422
+    assert client.post(f'/api/runs/{completed_run}/features/export',
+                       json={'sort': 'nope'}).status_code == 422
+
+
+def test_a_run_can_be_labelled_and_relabelled(client, completed_run):
+    def listed():
+        return next(run for run in client.get('/api/runs').json()
+                    if run['run_id'] == completed_run)
+
+    response = client.patch(f'/api/runs/{completed_run}', json={'label': '  CV 0.3,\n no decon  '})
+    assert response.status_code == 200, response.text
+    assert response.json()['label'] == 'CV 0.3, no decon'
+    assert listed()['label'] == 'CV 0.3, no decon'
+    assert client.get(f'/api/runs/{completed_run}/status').json()['label'] == 'CV 0.3, no decon'
+    # The request still holds everything needed to run it again.
+    request = client.get(f'/api/runs/{completed_run}/request').json()
+    assert request['label'] == 'CV 0.3, no decon'
+    assert request['settings']['cvthresh'] and request['inputs']['peaktable']
+
+    assert client.patch(f'/api/runs/{completed_run}', json={'label': 'x' * 500}).json()['label'] \
+        == 'x' * 120
+    assert client.patch(f'/api/runs/{completed_run}', json={'label': '   '}).json()['label'] is None
+    assert listed()['label'] is None
+    assert client.patch('/api/runs/r_0000000000000000', json={'label': 'x'}).status_code == 404
+    # Plots are unaffected by a rename.
+    assert client.post(f'/api/runs/{completed_run}/plots/mzrt', json={}).status_code == 200
+
+
+def test_a_tall_heatmap_is_binned_for_display(client, completed_run, monkeypatch):
+    """Past the row cap neighbouring features are averaged; the feature list
+    and the dendrogram still cover every feature."""
+    from app import config
+    full = client.post(f'/api/runs/{completed_run}/plots/heatmap', json={}).json()
+    assert full['bin_size'] == 1 and len(full['z']) == full['shape'][0]
+
+    monkeypatch.setattr(config, 'MAX_HEATMAP_ROWS', 100)
+    binned = client.post(f'/api/runs/{completed_run}/plots/heatmap', json={}).json()
+    rows, cols = binned['shape']
+    size = binned['bin_size']
+    assert size == -(-rows // 100) > 1
+    assert len(binned['z']) == -(-rows // size) <= 100
+    assert all(len(row) == cols for row in binned['z'])
+    assert binned['features'] == full['features'], 'every feature is still listed, in order'
+    assert binned['row_dendrogram'] == full['row_dendrogram']
+    assert all(0 <= value <= 1 for row in binned['z'] for value in row)
+    # A bin is the mean of the rows it covers.
+    first = [sum(column) / size for column in zip(*full['z'][:size])]
+    assert all(abs(a - b) < 1e-3 for a, b in zip(first, binned['z'][0]))
+
+
+def test_rows_can_be_fetched_by_id(client, completed_run):
+    """The browser may list features in an order of its own (selected or
+    flagged first), so it asks for the rows on screen by id."""
+    options = {'sort': 'm/z', 'include_filtered': True}
+    whole = client.post(f'/api/runs/{completed_run}/features', json={**options, 'limit': 0}).json()
+    by_id = {row[0]: row for row in whole['rows']}
+    wanted = [whole['rows'][i][0] for i in (400, 3, 250, 17)]
+
+    body = client.post(f'/api/runs/{completed_run}/features',
+                       json={**options, 'rows_for': [*wanted, 'not-a-feature']}).json()
+    assert [row[0] for row in body['rows']] == wanted, 'in the order asked, unknown ids left out'
+    assert body['rows'] == [by_id[compound] for compound in wanted]
+    assert body['total'] == whole['total']
+
+    # Only features in the view: one the filters remove is not returned.
+    surviving = client.post(f'/api/runs/{completed_run}/features',
+                            json={'sort': 'm/z', 'limit': 0, 'with_ids': True}).json()['ids']
+    removed = next(compound for compound in by_id if compound not in set(surviving))
+    narrowed = client.post(f'/api/runs/{completed_run}/features',
+                           json={'sort': 'm/z', 'rows_for': [removed, surviving[0]]}).json()
+    assert [row[0] for row in narrowed['rows']] == [surviving[0]]
+
+    assert client.post(f'/api/runs/{completed_run}/features',
+                       json={'rows_for': 'everything'}).status_code == 422
+    assert client.post(f'/api/runs/{completed_run}/features',
+                       json={'rows_for': ['x'] * 5000}).status_code == 422
+
+
+def test_features_can_be_flagged_and_unflagged(client, completed_run):
+    ids = client.post(f'/api/runs/{completed_run}/features',
+                      json={'sort': 'm/z', 'limit': 0, 'with_ids': True}).json()['ids']
+    url = f'/api/runs/{completed_run}/flags'
+    assert client.get(url).json() == {'flags': {}}
+
+    red = client.post(url, json={'ids': [ids[0], ids[1], 'not-a-feature'], 'colour': '#E6194B'})
+    assert red.status_code == 200, red.text
+    assert red.json()['flags'] == {ids[0]: '#e6194b', ids[1]: '#e6194b'}, \
+        'lower-cased, and ids the run does not have are not stored'
+    blue = client.post(url, json={'ids': [ids[1], ids[2]], 'colour': '#4363d8'}).json()['flags']
+    assert blue == {ids[0]: '#e6194b', ids[1]: '#4363d8', ids[2]: '#4363d8'}, \
+        'a second flag on a feature replaces the first'
+    assert client.get(url).json()['flags'] == blue
+
+    # In the export, beside each feature.
+    header, rows, _ = _export(client, completed_run, sort='m/z')
+    at = header.index('flag')
+    exported = {row[0]: row[at] for row in rows if row[at]}
+    assert exported == blue
+
+    for bad in ('red', '#12345', '#gggggg', 'e6194b'):
+        assert client.post(url, json={'ids': [ids[0]], 'colour': bad}).status_code == 422, bad
+    assert client.post(url, json={'ids': 'all', 'colour': '#000000'}).status_code == 422
+
+    cleared = client.post(url, json={'ids': [ids[0], ids[1]], 'colour': None}).json()['flags']
+    assert cleared == {ids[2]: '#4363d8'}
+    assert client.post(url, json={'ids': ids, 'colour': None}).json() == {'flags': {}}
+    assert client.get(url).json() == {'flags': {}}
+    # With no flags left the export goes back to having no flag column.
+    assert 'flag' not in _export(client, completed_run, sort='m/z')[0]
+    assert client.get('/api/runs/r_0000000000000000/flags').status_code == 404

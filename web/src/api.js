@@ -126,11 +126,35 @@ export const api = {
   runRequest: (id) => request(`/api/runs/${id}/request`),
   cancelRun: (id) => json('POST', `/api/runs/${id}/cancel`),
   deleteRun: (id) => request(`/api/runs/${id}`, { method: 'DELETE' }),
+  renameRun: (id, label) => json('PATCH', `/api/runs/${id}`, { label: label || null }),
 
   // --- results ---------------------------------------------------------
   catalogue: (id) => request(`/api/runs/${id}/plots`),
   plot: (id, name, options) => json('POST', `/api/runs/${id}/plots/${name}`, options),
   features: (id, options) => json('POST', `/api/runs/${id}/features`, options),
+
+  /** The feature table as a CSV file: `{blob, name}`. Takes the table's
+   *  options (so the export is the view on screen), plus `ids` to export
+   *  only those features. */
+  async exportFeatures(id, options) {
+    let response;
+    try {
+      response = await fetch(`/api/runs/${id}/features/export`, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options ?? {}),
+      });
+    } catch {
+      throw new ApiError('Could not reach the server. Is it still running?', 0, null);
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new ApiError((body && body.detail) || response.statusText, response.status, body);
+    }
+    const header = response.headers.get('content-disposition') || '';
+    const name = (/filename="([^"]+)"/.exec(header) || [])[1] || 'features.csv';
+    return { blob: await response.blob(), name };
+  },
   feature(id, compound) {
     const key = `${id}\u0000${compound}`;
     const cached = featureCache.get(key);
@@ -167,6 +191,8 @@ export const api = {
   msms: (id, compound, filter) =>
     request(`/api/runs/${id}/feature/msms?compound=${encodeURIComponent(compound)}`
             + (filter ? `&filter=${encodeURIComponent(JSON.stringify(filter))}` : '')),
+  flags: (id) => request(`/api/runs/${id}/flags`),
+  setFlags: (id, ids, colour) => json('POST', `/api/runs/${id}/flags`, { ids, colour }),
   downloads: (id) => request(`/api/runs/${id}/downloads`),
   downloadUrl: (id, key) => `/api/runs/${id}/downloads/${key}`,
   downloadAllUrl: (id) => `/api/runs/${id}/downloads.zip`,

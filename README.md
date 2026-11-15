@@ -88,8 +88,40 @@ The selected feature and injection stay in the status bar along the bottom,
 and selecting a feature anywhere — a scatter point, a heatmap cell, a table
 row — selects it everywhere, the same cross-plot highlight the desktop has.
 
-Feature Info lists every feature at once (no paging) with the detail pane
-below it; the arrow keys walk the list.
+Feature Info lists every feature at once (no paging) with the details rail
+beside it; the arrow keys walk the list.
+
+Selection is multiple wherever features are shown. In the table, click
+selects one feature, Ctrl-click adds or removes one, Shift-click (or Shift
+with the arrow keys) selects a range and Ctrl+A everything listed. On the
+feature plots, Ctrl-click adds a point and the box and lasso tools select a
+region (hold Shift to add to the selection). Every selected feature is marked
+on every plot, so a set picked in the table can be shown on the volcano plot
+for a figure. With more than one selected, the top of the details rail lists
+the selection and exports it.
+
+Two narrow columns lead the feature table. **Sel** ticks the selected
+features (clicking a tick adds or removes that row), and **Flag** shows a
+feature's flag: a lasting mark in a colour of your choosing, kept with the run.
+Pick a colour and press **Flag** to mark the selected features, or click a
+row's flag cell to mark just that one; clicking either column heading lists
+those features first (flags grouped by colour), with the column sort still
+applying within each part. With **Flags in plots** on, flagged features are
+marked on the feature plots in their flag colours, the same way the selection
+is marked in yellow -- several colours of highlight at once. Flags are also a
+column in the export.
+
+**Export CSV** on Feature Info saves the table as listed -- its filters, its
+order -- and **Export selected** saves just the selection. Both carry every
+per-feature column the run produced plus each feature's best NPAtlas and
+MS/MS library match.
+
+A run can be given a label on the Run view (or renamed later from **Runs**),
+and **Reuse settings** in the run list puts a previous run's files, filters
+and feature sets back in the form to change and run again. In the Plot
+Feature Set editor, groups are picked the same way as table rows (Shift and
+Ctrl for several) and moved together by dragging or with the buttons below
+the lists.
 
 Every output file the desktop writes is downloadable, **including the
 `.mpct` session file**, so an analysis run in the browser can be opened in
@@ -188,6 +220,7 @@ All optional; every value has a working default.
 | `MPACT_JOB_TIMEOUT_SECONDS` | `3600` | Per-run time limit |
 | `MPACT_MAX_UPLOAD_BYTES` | `536870912` | Upload ceiling (512MB) |
 | `MPACT_SESSION_MAX_AGE_SECONDS` | `2592000` | Sessions pruned at startup and daily (30 days) |
+| `MPACT_MAX_HEATMAP_ROWS` | `1500` | Rows drawn in the heatmap; past it, neighbouring features in the clustered order are averaged for display |
 | `MPACT_CSV_CACHE_MB` | `256` | Memory for parsed output tables (least recently used are dropped) |
 | `MPACT_PLOT_CACHE_MB` | `64` | Memory for finished plot payloads, so reopening a tab does not recompute it |
 | `MPACT_FRAGDB_CACHE_ENTRIES` | `6` | Parsed fragment databases kept in memory, one per recently viewed run |

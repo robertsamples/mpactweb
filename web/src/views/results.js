@@ -13,8 +13,9 @@
 
 import { registerView } from '../app.js';
 import { api } from '../api.js';
-import { store } from '../state.js';
-import { clear, el, num, select, toast, debounce } from '../util.js';
+import { selection, store } from '../state.js';
+import { flags, showFlagsToggle } from '../flags.js';
+import { clear, el, isAdditive, num, select, toast, debounce } from '../util.js';
 import { message, plotlyReady } from '../plots/base.js';
 import { fc3d, massdefect, mzrt, quality } from '../plots/scatter.js';
 import { volcano as drawVolcano, volcanoCounts } from '../plots/volcano.js';
@@ -33,8 +34,22 @@ const runId = () => (store.get('run') || {}).run_id;
 function plotContext() {
   return {
     selectedFeature: store.get('selectedFeature'),
+    // Every selected feature, as a Set: what the plots highlight.
+    selectedFeatures: selection.asSet(),
+    // Flagged features to mark, compound -> colour (empty when switched off).
+    flags: flags.shown(),
     selectedSample: store.get('selectedSample'),
-    onSelectFeature: (compound) => store.set({ selectedFeature: compound }),
+    // A plain click selects that feature alone; with Ctrl or Shift held it
+    // is added to (or taken out of) the selection, as in the feature table.
+    onSelectFeature: (compound, mouse) => {
+      if (isAdditive(mouse)) selection.toggle(compound);
+      else store.set({ selectedFeature: compound });
+    },
+    // Several at once (a binned heatmap row): replace, or add with Ctrl/Shift.
+    onSelectFeatures: (compounds, mouse) => {
+      if (isAdditive(mouse)) selection.add(compounds);
+      else selection.set(compounds, compounds[0]);
+    },
     // Picking an ordination point selects an injection/sample. It goes to
     // the status bar, which stays on screen, rather than a toast that has
     // vanished by the time you look for it. The series it came from is the
@@ -44,8 +59,8 @@ function plotContext() {
   };
 }
 
-/** The Feature Info table's rows, when "Current selection only" is on
- *  for the current run; otherwise null. */
+/** The Feature Info table's rows, when "Table rows only" is on for the
+ *  current run; otherwise null. */
 function tableIds() {
   const filter = store.get('plotFilter');
   return filter && filter.active && filter.ids && filter.run === runId() ? filter.ids : null;
@@ -99,6 +114,12 @@ function plotPanel(spec) {
     onClearSelection: () => store.set({ selectedFeature: null, selectedSample: null,
                                        selectedSampleGroup: null }),
     isSelectionActive: () => Boolean(store.get('selectedFeature') || store.get('selectedSample')),
+    // Box and lasso select features on the plots that draw one point per
+    // feature. Holding Shift or Ctrl adds the region to the selection.
+    onRegion: spec.featureLevel ? (ids, additive) => {
+      if (additive) { if (ids.length) selection.add(ids); }
+      else selection.set(ids);
+    } : null,
   });
   const canvas = el('div', { class: 'plot-canvas' },
                     [toolbar, surface, navbar.node, footer]);
@@ -190,6 +211,10 @@ function plotPanel(spec) {
     clear(toolbar);
     const controls = spec.controls ? spec.controls(state, { fetchAndDraw, redraw }, payload) : [];
     if (spec.featureLevel) controls.push(tableToggle());
+    // Only once something is flagged: until then it is a switch for nothing.
+    if ((spec.featureLevel || spec.showsFlags) && flags.count()) {
+      controls.push(showFlagsToggle('Show flags'));
+    }
     for (const item of controls) toolbar.append(item);
     toolbar.append(el('span', { class: 'spacer' }));
     toolbar.append(status);
@@ -216,8 +241,10 @@ function plotPanel(spec) {
           store.set({ plotFilter: { ...store.get('plotFilter'), active: event.target.checked } });
         } },
       }),
-      el('span', { text: 'Current selection only' }),
+      el('span', { text: 'Table rows only' }),
     ]);
+    node.title = 'Plot only the features currently listed in Feature Info '
+                 + '(its filters and searches)';
     node.classList.toggle('hidden', !filter.ids || filter.run !== runId());
     return node;
   }
@@ -227,6 +254,14 @@ function plotPanel(spec) {
       if (!node.isConnected || node.offsetParent === null) return;
       buildToolbar();
       redraw();
+    });
+  }
+  if (spec.featureLevel || spec.showsFlags) {
+    // The switch appears with the first flag and follows the setting; the
+    // redraw itself is the view's (it redraws on any selection or flag change).
+    store.on(['flags', 'showFlags'], () => {
+      if (!node.isConnected || node.offsetParent === null) return;
+      buildToolbar();
     });
   }
 
@@ -250,7 +285,12 @@ function plotPanel(spec) {
    *  changed since the last fetch, otherwise redraw what is there. */
   const load = () => {
     const key = `${runId()}\u0000${JSON.stringify(spec.options ? spec.options(state) : {})}`;
-    if (payload && key === loadedKey) { redraw(); return Promise.resolve(); }
+    if (payload && key === loadedKey) {
+      // The bar's switches may have been changed from another view since.
+      buildToolbar();
+      redraw();
+      return Promise.resolve();
+    }
     return fetchAndDraw();
   };
 
@@ -298,7 +338,7 @@ function tabbedView({ id, label, group, requires, tabs }) {
   // A selection made anywhere updates the highlight here -- the desktop's
   // cross-plot highlight. Only the visible view redraws; the others pick the
   // selection up when they are next shown.
-  store.on(['selectedFeature', 'selectedSample'], () => {
+  store.on(['selectedFeature', 'selectedFeatures', 'selectedSample', 'flags', 'showFlags'], () => {
     if (!node.classList.contains('active')) return;
     panels.get(activeTab)?.redraw();
   });
@@ -548,7 +588,7 @@ function multivariateView() {
     tabs: [{
       id: 'ordination', label: 'Multivariate',
       build: () => plotPanel({
-        plot: 'ordination', tall: true,
+        plot: 'ordination', tall: true, showsFlags: true,
         // NMDS of the biological replicates (technical replicates averaged)
         // first; both can be changed from the bar.
         initial: { method: 'NMDS', view: 'Scores', replicates: 'Biological Replicates' },
@@ -649,7 +689,7 @@ function heatmapView() {
     tabs: [{
       id: 'heatmap', label: 'Heatmap',
       build: () => plotPanel({
-        plot: 'heatmap', tall: true,
+        plot: 'heatmap', tall: true, showsFlags: true,
         initial: { view: 'Technical Replicates', use_sample_names: true, colorscheme: 'rocket' },
         options: (state) => state,
         controls: (state, actions, payload) => [
@@ -667,7 +707,10 @@ function heatmapView() {
         footer: (payload) => el('p', { class: 'muted' },
           [`${payload.shape[0].toLocaleString()} features × ${payload.shape[1]} columns, `
            + 'row-scaled and clustered with Ward linkage on Euclidean distance. '
-           + 'Click a cell to select that feature.']),
+           + ((payload.bin_size || 1) > 1
+             ? `Drawn as ${payload.z.length.toLocaleString()} rows: neighbouring features are `
+               + `averaged ${payload.bin_size} to a row, and clicking a row selects them. `
+             : 'Click a cell to select that feature; Ctrl-click adds to the selection. ')]),
       }),
     }],
   });

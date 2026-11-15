@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .. import config, jobs, storage
 from ..deps import get_file, get_run, get_session
-from ..schemas import AnalysisSettings, JobStatus, RunRequest
+from ..schemas import AnalysisSettings, JobStatus, RunLabel, RunRequest
 
 router = APIRouter(prefix='/api/runs', tags=['runs'])
 
@@ -146,7 +146,27 @@ def run_log(run=Depends(get_run), tail: int = 64 * 1024):
     operator's. The log on disk keeps the full paths.
     """
     text = run.read_log(tail_bytes=max(1024, min(tail, 1024 * 1024)))
-    return {'run_id': run.id, 'log': _redact_paths(text)}
+    return {'run_id': run.id, 'log': _redact_paths(settle_progress(text))}
+
+
+def settle_progress(text):
+    """Show each line as a terminal would have left it.
+
+    The log is written with progress bars already redrawn in place (see
+    ``runner.ProgressLog``), so for a new run this changes nothing. It is for
+    logs from before that: there every redraw of a bar is still in the file,
+    separated by carriage returns, and only what followed the last one is
+    what was on screen.
+    """
+    if '\r' not in text:
+        return text
+    lines = []
+    for line in text.split('\n'):
+        line = line.rstrip('\r')
+        if '\r' in line:
+            line = line.rsplit('\r', 1)[1]
+        lines.append(line)
+    return '\n'.join(lines)
 
 
 def _redact_paths(text):
@@ -175,6 +195,17 @@ async def delete_run(run=Depends(get_run), session: storage.Session = Depends(ge
     await jobs.manager.cancel(session, run)
     await run_in_threadpool(shutil.rmtree, run.root, True)
     return {'deleted': run.id}
+
+
+@router.patch('/{run_id}')
+def rename_run(payload: RunLabel, run=Depends(get_run)):
+    """Give a run a label, or clear it."""
+    request = run.read_request()
+    if request is None:
+        raise HTTPException(status_code=404, detail='run request not found')
+    request['label'] = payload.label
+    run.write_request(request)
+    return {'run_id': run.id, 'label': payload.label}
 
 
 @router.get('/{run_id}/request')

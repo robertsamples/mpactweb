@@ -10,12 +10,14 @@ range / category-token rules the desktop's filter row applies are exactly
 the ones applied here, so a filter behaves the same in both apps.
 """
 
+import json
+
 import numpy as np
 import pandas as pd
 
 from .. import config
 from ..core import treefilters
-from ..results import Memo, clean
+from ..results import Memo, clean, file_key
 
 # The desktop's feature-table columns, in ``searchtree.COLUMNS`` order and
 # with the same source field for each. 'Sets' and 'Groups' both come from the
@@ -37,6 +39,8 @@ TABLE_COLUMNS = (
 # JSON, which is fine; this only stops a pathological table from being sent
 # in one piece.
 MAX_ROWS = 100_000
+# Ids in one by-id request: a screenful plus what is fetched ahead of it.
+MAX_ROWS_FOR = 2_000
 
 
 def _reverse_text(text):
@@ -112,12 +116,52 @@ class SetFilter:
         return self.required <= tokens and not (self.excluded & tokens)
 
 
-def feature_table(results, options=None, ms2_ids=None):
-    """The feature table: filtered, sorted, and unpaged by default.
+# The filtered, sorted table for a run and a set of options. Building it is
+# the expensive part of a table request; the browser then asks for it a
+# screenful at a time as the list is scrolled, and each of those requests is
+# a slice of the same view.
+_VIEWS = Memo(limit=12)
 
-    Sorting and filtering happen server-side over the whole set so the client
-    can hold a complete, correctly ordered list and still window the rows it
-    actually renders.
+# Options that decide which rows are in the view and in what order. Paging
+# (offset, limit, with_ids) only chooses the slice returned.
+VIEW_OPTIONS = ('filters', 'sort', 'descending', 'include_filtered', 'hit_filter')
+
+
+def _stamp(path):
+    try:
+        return file_key(path)
+    except OSError:
+        return None
+
+
+def _view(results, options, ms2_ids=None, ms2_stamp=None):
+    """The whole view: ``rows`` (every row, in order), ``ids`` and the flags
+    the table header needs. Shared between requests: read, never modified.
+
+    ``ms2_stamp`` identifies the fragment database ``ms2_ids`` came from; a
+    restriction without one cannot be told apart from another, so it is built
+    fresh rather than cached.
+    """
+    from . import hits, msms
+    if not options.get('hit_filter') and atlas_available():
+        hits.prepare(results)
+    if ms2_ids is not None and ms2_stamp is None:
+        return _build_view(results, options, ms2_ids)
+    key = ('feature-view', file_key(results.iondict_path), _stamp(results.filtered_path),
+           _stamp(results.outputdir / msms.RESULTS_FILE), _stamp(config.MSMS_LIBRARY_PATH),
+           _atlas_key(),
+           json.dumps({name: options.get(name) for name in VIEW_OPTIONS},
+                      sort_keys=True, default=str),
+           ms2_stamp if ms2_ids is not None else None)
+    return _VIEWS.get(key, lambda: _build_view(results, options, ms2_ids))
+
+
+def _build_view(results, options, ms2_ids):
+    """Filter and sort the whole feature table.
+
+    Sorting and filtering happen server-side over the whole set, so the list
+    the client holds (every id, in order) is complete and correctly ordered
+    whichever rows it has fetched.
 
     ``include_filtered`` (default false) is the "show filtered-out features"
     switch. The desktop's tree lists only features that survived filtering --
@@ -127,7 +171,6 @@ def feature_table(results, options=None, ms2_ids=None):
     ``pass_*`` columns, which would have to re-implement which filters were
     enabled for this run.
     """
-    options = options or {}
     # Read-only here: rows are selected with a mask, never written back.
     iondict = results.iondict(copy=False)
     compounds = iondict['Compound'].astype(str)
@@ -147,8 +190,6 @@ def feature_table(results, options=None, ms2_ids=None):
 
     from . import hits
     hit_spec = None
-    if not options.get('hit_filter') and atlas_available():
-        hits.prepare(results)
     if options.get('hit_filter'):
         hit_spec = hits.normalise(options['hit_filter'])
         if hit_spec:
@@ -207,17 +248,54 @@ def feature_table(results, options=None, ms2_ids=None):
         # blanks-last group in place regardless of direction.
         rows.sort(key=sort_key_for)
 
-    total = len(rows)
-    offset = max(0, int(options.get('offset', 0)))
-    # limit=0 means "every row" -- the feature table is shown unpaged, the way
-    # the desktop's tree is, so keyboard navigation can run through the whole
-    # dataset. The ceiling is a transport guard, not a page size.
-    requested = int(options.get('limit', 0) or 0)
-    limit = total if requested <= 0 else requested
-    limit = min(limit, MAX_ROWS)
-    page = rows[offset:offset + limit]
-
     return {
+        'rows': rows,
+        'ids': [row[0] for row in rows],
+        'hit_spec': hit_spec,
+        'msms_searched': msms_counts is not None,
+        'searched': bool('hits' in iondict.columns and iondict['hits'].notna().any()),
+        'categories': treefilters.distinct_category_tokens(
+            iondict['groups'].fillna('').tolist()) if 'groups' in iondict else [],
+    }
+
+
+def feature_table(results, options=None, ms2_ids=None, ms2_stamp=None):
+    """One page of the feature table, filtered and sorted.
+
+    ``offset``/``limit`` choose the rows returned; ``limit`` 0 (the default)
+    means every row. ``rows_for`` (a list of ids) returns those features'
+    rows instead, in the order asked. ``with_ids`` adds ``ids``, every compound id in the view
+    in order -- what the browser needs to size the list, walk it with the
+    keyboard and select ranges in it without holding every row. It asks for
+    that once, with the first page, and for further pages as they scroll
+    into view.
+    """
+    options = options or {}
+    view = _view(results, options, ms2_ids, ms2_stamp)
+    rows = view['rows']
+
+    total = len(rows)
+    wanted = options.get('rows_for')
+    if wanted is not None:
+        # Rows by id rather than by position: the browser can put the list in
+        # an order of its own (selected or flagged features first), and then
+        # the rows on screen are not a contiguous slice of this one.
+        if not isinstance(wanted, list) or len(wanted) > MAX_ROWS_FOR:
+            raise ValueError(f'rows_for must be a list of at most {MAX_ROWS_FOR} feature ids')
+        by_id = view.get('by_id')
+        if by_id is None:
+            by_id = view['by_id'] = {row[0]: row for row in rows}
+        page = [by_id[compound] for compound in wanted if compound in by_id]
+        offset, limit = 0, len(page)
+    else:
+        offset = max(0, int(options.get('offset', 0) or 0))
+        # The ceiling is a transport guard, not a page size.
+        requested = int(options.get('limit', 0) or 0)
+        limit = total if requested <= 0 else requested
+        limit = min(limit, MAX_ROWS)
+        page = rows[offset:offset + limit]
+
+    table = {
         'plot': 'features',
         'columns': [dict(column) for column in TABLE_COLUMNS],
         'rows': page,
@@ -225,12 +303,71 @@ def feature_table(results, options=None, ms2_ids=None):
         'offset': offset,
         'limit': limit,
         'include_filtered': bool(options.get('include_filtered', False)),
-        'hit_filter': bool(hit_spec),
-        'msms_searched': msms_counts is not None,
-        'searched': bool('hits' in iondict.columns and iondict['hits'].notna().any()),
-        'categories': treefilters.distinct_category_tokens(
-            iondict['groups'].fillna('').tolist()) if 'groups' in iondict else [],
+        'hit_filter': bool(view['hit_spec']),
+        'msms_searched': view['msms_searched'],
+        'searched': view['searched'],
+        'categories': view['categories'],
     }
+    if options.get('with_ids'):
+        table['ids'] = view['ids']
+    return table
+
+
+# Columns added to an export after the run's own per-feature columns.
+EXPORT_MS1 = ('ms1_top_match', 'ms1_top_formula', 'ms1_top_ppm', 'ms1_top_organism')
+EXPORT_MS2 = ('ms2_hits', 'ms2_top_match', 'ms2_top_score')
+
+
+def export_table(results, options=None, ms2_ids=None, ms2_stamp=None, ids=None):
+    """``(header, rows)`` for a CSV of the feature table.
+
+    The rows are the view the options describe -- the same filters and the
+    same order as the table on screen -- or, with ``ids``, just those
+    features. Every per-feature column the run produced is included
+    (``iondict.csv``'s), then the feature's flag colour when the run has
+    flags, followed by the best database match for each
+    feature: the closest NPAtlas mass match and the highest-scoring MS/MS
+    library match, among those meeting the hit filter when one is active.
+    """
+    from . import hits, msms
+    options = options or {}
+    view = _view(results, options, ms2_ids, ms2_stamp)
+    order = [str(compound) for compound in view['ids']]
+    if ids is not None:
+        wanted = {str(compound) for compound in ids}
+        order = [compound for compound in order if compound in wanted]
+
+    positions = results.feature_positions()
+    order = [compound for compound in order if compound in positions]
+    frame = results.iondict(copy=False).iloc[[positions[compound] for compound in order]]
+
+    header = [str(name) for name in frame.columns]
+    columns = [_cells(frame[name]) for name in frame.columns]
+
+    flags = results.flags()
+    if flags:
+        # The flag's colour, so a spreadsheet can be sorted or filtered by it.
+        header.append('flag')
+        columns.append([flags.get(compound) for compound in order])
+
+    spec = view['hit_spec']
+    if atlas_available():
+        best = hits.top_matches(results, order, spec)
+        header += EXPORT_MS1
+        for slot in range(len(EXPORT_MS1)):
+            columns.append([best[compound][slot] if compound in best else None
+                            for compound in order])
+
+    if msms.available() and msms.stored(results) is not None:
+        counts = msms.counts(results) or {}
+        best = hits.top_library_matches(results, order, spec)
+        header += EXPORT_MS2
+        columns.append([counts.get(compound) for compound in order])
+        for slot in range(2):
+            columns.append([best[compound][slot] if compound in best else None
+                            for compound in order])
+
+    return header, list(zip(*columns)) if columns else []
 
 
 class UnknownFeature(ValueError):

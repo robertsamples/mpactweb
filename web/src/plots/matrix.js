@@ -24,14 +24,33 @@ export const COLORSCALES = {
 
 export const colorscale = (name) => COLORSCALES[name] || COLORSCALES.rocket;
 
-/** Convert scipy dendrogram icoord/dcoord segment pairs into a single
- *  Plotly line trace, using nulls to break between segments. */
+/** Convert scipy dendrogram icoord/dcoord segments into Plotly line traces.
+ *
+ *  With per-segment colours or hover text each merge is its own trace, which
+ *  is what the standalone dendrogram (tens of leaves) wants. Without either
+ *  -- the two dendrograms beside the heatmap -- every merge goes into one
+ *  trace, broken with nulls: a heatmap of three thousand features otherwise
+ *  carried three thousand traces, and Plotly's cost is per trace. */
 function dendrogramTrace(icoord, dcoord, colours, orientation, axisIds, hover) {
-  const x = [];
-  const y = [];
   const line = { color: '#333', width: 1 };
-  const traces = [];
 
+  if (!colours && !hover) {
+    const x = [];
+    const y = [];
+    for (let i = 0; i < icoord.length; i += 1) {
+      const across = icoord[i];
+      const height = dcoord[i];
+      const segX = orientation === 'top' ? across : height;
+      const segY = orientation === 'top' ? height : across;
+      for (let k = 0; k < segX.length; k += 1) { x.push(segX[k]); y.push(segY[k]); }
+      x.push(null);
+      y.push(null);
+    }
+    return [{ type: 'scatter', mode: 'lines', x, y, line, hoverinfo: 'skip',
+              showlegend: false, xaxis: axisIds.x, yaxis: axisIds.y }];
+  }
+
+  const traces = [];
   for (let i = 0; i < icoord.length; i += 1) {
     // Each scipy segment is the 4-point "staple" of one merge.
     const across = icoord[i];
@@ -57,21 +76,22 @@ function dendrogramTrace(icoord, dcoord, colours, orientation, axisIds, hover) {
       yaxis: axisIds.y,
     });
   }
-  if (!traces.length) traces.push({ type: 'scatter', mode: 'lines', x, y, hoverinfo: 'skip',
+  if (!traces.length) traces.push({ type: 'scatter', mode: 'lines', x: [], y: [], hoverinfo: 'skip',
                                     showlegend: false, xaxis: axisIds.x, yaxis: axisIds.y });
   return traces;
 }
 
-/** Per-cell hover text, memoised on the payload: rebuilding tens of thousands
- *  of strings on every redraw is pure waste, and the payload only changes when
- *  the server sends a new one. */
-function hoverText(payload) {
-  if (!payload._hoverText) {
-    payload._hoverText = payload.z.map((row, i) => row.map((value, j) =>
-      `<b>${payload.features[i]}</b><br>${payload.columns[j]}<br>scaled: ${value.toFixed(3)}`));
+/** Where each feature sits in the clustered order, built once per payload. */
+function featureIndex(payload) {
+  if (!payload._featureIndex) {
+    payload._featureIndex = new Map(payload.features.map((feature, index) => [feature, index]));
   }
-  return payload._hoverText;
+  return payload._featureIndex;
 }
+
+// Highlight bands are layout shapes; past this many a relayout stops being
+// instant, and that many separate bands cannot be told apart anyway.
+const MAX_BANDS = 400;
 
 export function heatmap(surface, payload, context) {
   const [rows, cols] = payload.shape;
@@ -79,50 +99,87 @@ export function heatmap(surface, payload, context) {
     message(surface, 'The filtered peak table is empty -- nothing to cluster.');
     return;
   }
+  // The server averages neighbouring features into bins once there are more
+  // of them than the plot has pixels (see plotdata/heatmap.py). `drawn` is
+  // the number of matrix rows; drawn row r covers features [r*bin, (r+1)*bin).
+  const bin = payload.bin_size || 1;
+  const drawn = payload.z.length;
+  const rowOf = (index) => Math.floor(index / bin);
+  const featuresIn = (row) => payload.features.slice(row * bin, (row + 1) * bin);
 
-  // The highlight band for the selected row. Rows are one unit tall in
-  // category coordinates, so the band spans idx +/- 0.5. This is the web form
-  // of the desktop's `parent.highlight['heatmap']` line artist.
-  const highlightShapes = (feature) => {
-    const index = payload.features.indexOf(feature);
-    if (index === -1) return [];
-    return [{
-      type: 'rect', xref: 'x', yref: 'y',
-      x0: -0.5, x1: cols - 0.5, y0: index - 0.5, y1: index + 0.5,
-      line: { color: '#f2d024', width: 2 }, fillcolor: 'rgba(0,0,0,0)',
-      layer: 'above',
-    }];
+  // A highlight band per selected row. Rows are one unit tall in axis
+  // coordinates, so a band spans row +/- 0.5. This is the web form of the
+  // desktop's `parent.highlight['heatmap']` line artist.
+  const band = (row, colour) => ({
+    type: 'rect', xref: 'x', yref: 'y',
+    x0: -0.5, x1: cols - 0.5, y0: row - 0.5, y1: row + 0.5,
+    line: { color: colour, width: 2 }, fillcolor: 'rgba(0,0,0,0)',
+    layer: 'above',
+  });
+  // Flagged rows in their flag's colour, then the selected rows in yellow on
+  // top (a row that is both reads as selected).
+  const highlightShapes = (selected, flags) => {
+    const index = featureIndex(payload);
+    const flagged = new Map();          // drawn row -> colour
+    if (flags && flags.size) {
+      for (const [feature, colour] of flags) {
+        const at = index.get(feature);
+        if (at !== undefined && !flagged.has(rowOf(at))) flagged.set(rowOf(at), colour);
+        if (flagged.size >= MAX_BANDS) break;
+      }
+    }
+    const bands = new Set();
+    if (selected && selected.size) {
+      for (const feature of selected) {
+        const at = index.get(feature);
+        if (at !== undefined) bands.add(rowOf(at));
+        if (bands.size >= MAX_BANDS) break;
+      }
+    }
+    return [...[...flagged].filter(([row]) => !bands.has(row)).map(([row, colour]) => band(row, colour)),
+            ...[...bands].map((row) => band(row, '#f2d024'))];
   };
 
-  // Moving the selection must not redraw the matrix. A `Plotly.react` here
-  // re-diffs ~26,000 cells and their hover strings, which is what made the
-  // arrow keys crawl on a real dataset; the highlight is a layout shape, so
-  // a relayout is all it needs.
+  // Changing the selection must not redraw the matrix. A `Plotly.react` here
+  // re-diffs every cell, which is what made the arrow keys crawl on a real
+  // dataset; the highlight is a layout shape, so a relayout is all it needs.
   if (surface._plotly && surface._heatmapPayload === payload) {
-    Plotly.relayout(surface, { shapes: highlightShapes(context.selectedFeature) });
+    Plotly.relayout(surface, { shapes: highlightShapes(context.selectedFeatures, context.flags) });
     return;
   }
   surface._heatmapPayload = payload;
 
   // scipy lays leaves out at 5, 15, 25, ... in icoord units; map that onto
-  // the heatmap's 0..n-1 category positions so the dendrogram lines up with
-  // the columns/rows beneath them.
+  // the heatmap's 0..n-1 positions so the dendrograms line up with the
+  // columns and rows beside them. The row dendrogram has a leaf per feature,
+  // so with binning its positions are scaled onto the drawn rows.
   const toIndex = (value) => (value - 5) / 10;
+  const toRow = (value) => (toIndex(value) + 0.5) / bin - 0.5;
   const colDendro = payload.col_dendrogram;
   const rowDendro = payload.row_dendrogram;
+
+  // Hover names the cell from the axes' own labels: each axis carries one
+  // tick label per position (shown or not), and Plotly's hover text for an
+  // axis value is its tick label. Building a string per cell instead, as
+  // this used to, was rows x columns strings before anything could be drawn.
+  const rowLabels = bin === 1 ? payload.features : Array.from({ length: drawn }, (_, row) => {
+    const members = featuresIn(row);
+    return members.length > 1 ? `${members[0]} … ${members[members.length - 1]} `
+                                + `(${members.length} features, averaged)` : members[0];
+  });
+  const positions = (count) => Array.from({ length: count }, (_, i) => i);
 
   const traces = [{
     type: 'heatmap',
     z: payload.z,
-    x: payload.columns.map((label, index) => index),
-    y: payload.features.map((label, index) => index),
+    x: positions(cols),
+    y: positions(drawn),
     colorscale: colorscale(payload.colorscheme),
     // The title has to be an object: this Plotly ignores the bare-string
     // form (and `titleside`), which left the colour bar with no label at all.
     colorbar: { title: { text: 'Scaled abundance', side: 'right', font: { size: 11 } },
                 thickness: 12, len: 0.72, x: 1.01, tickfont: { size: 10 } },
-    hovertemplate: '%{customdata}<extra></extra>',
-    customdata: hoverText(payload),
+    hovertemplate: '<b>%{y}</b><br>%{x}<br>scaled: %{z:.3f}<extra></extra>',
     xaxis: 'x', yaxis: 'y',
   }];
 
@@ -130,7 +187,7 @@ export function heatmap(surface, payload, context) {
     colDendro.icoord.map((seg) => seg.map(toIndex)), colDendro.dcoord, null, 'top',
     { x: 'x', y: 'y2' })) traces.push(trace);
   for (const trace of dendrogramTrace(
-    rowDendro.icoord.map((seg) => seg.map(toIndex)), rowDendro.dcoord, null, 'left',
+    rowDendro.icoord.map((seg) => seg.map(toRow)), rowDendro.dcoord, null, 'left',
     { x: 'x2', y: 'y' })) traces.push(trace);
 
   // Column labels get dropped once they can no longer be read; the desktop
@@ -140,7 +197,7 @@ export function heatmap(surface, payload, context) {
   draw(surface, traces, baseLayout({
     margin: { l: 74, r: 90, t: 12, b: showColumnLabels ? 140 : 40 },
     showlegend: false,
-    shapes: highlightShapes(context.selectedFeature),
+    shapes: highlightShapes(context.selectedFeatures, context.flags),
     // Pinned to the cells' own extent. Left to autorange, the row
     // dendrogram (a scatter trace on this same y axis) pads the range a few
     // pixels past the data, and that padding shows as bare axis below the
@@ -149,16 +206,16 @@ export function heatmap(surface, payload, context) {
       domain: [0.1, 1], anchor: 'y', showgrid: false, zeroline: false,
       range: [-0.5, cols - 0.5],
       showline: true, mirror: true, linecolor: '#3c3c3c',
-      tickmode: showColumnLabels ? 'array' : 'auto',
-      tickvals: showColumnLabels ? payload.columns.map((_, i) => i) : undefined,
-      ticktext: showColumnLabels ? payload.columns : undefined,
+      tickmode: 'array', tickvals: positions(cols), ticktext: payload.columns,
+      showticklabels: showColumnLabels, ticks: showColumnLabels ? 'outside' : '',
       tickangle: -90, tickfont: { size: 10 },
     },
     yaxis: {
       domain: [0, 0.88], anchor: 'x', showgrid: false, zeroline: false,
-      range: [-0.5, rows - 0.5],
+      range: [-0.5, drawn - 0.5],
       showline: true, mirror: true, linecolor: '#3c3c3c',
-      showticklabels: false, title: axisTitle('Feature'),
+      tickmode: 'array', tickvals: positions(drawn), ticktext: rowLabels,
+      showticklabels: false, ticks: '', title: axisTitle('Feature'),
     },
     xaxis2: { domain: [0, 0.095], anchor: 'y', showgrid: false, zeroline: false,
               showticklabels: false, autorange: 'reversed' },
@@ -171,8 +228,11 @@ export function heatmap(surface, payload, context) {
     surface.on('plotly_click', (event) => {
       const point = event.points && event.points[0];
       if (!point || point.curveNumber !== 0) return;
-      const feature = payload.features[point.pointIndex[0]];
-      if (feature) context.onSelectFeature(feature);
+      const members = featuresIn(point.pointIndex[0]);
+      if (!members.length) return;
+      // A binned row stands for several features: clicking it selects them.
+      if (members.length === 1) context.onSelectFeature(members[0], event.event);
+      else context.onSelectFeatures(members, event.event);
     });
   }
 
@@ -196,11 +256,11 @@ export function heatmap(surface, payload, context) {
     // selection down the screen therefore moves it down the index, not up --
     // getting this backwards is what made the arrows feel inverted.
     const step = { ArrowDown: -1, s: -1, S: -1, ArrowUp: 1, w: 1, W: 1 }[event.key];
-    if (step === undefined) return;
+    if (step === undefined || event.ctrlKey || event.metaKey || event.altKey) return;
     event.preventDefault();
     const last = payload.features.length - 1;
-    const current = payload.features.indexOf(store.get('selectedFeature'));
-    const next = current === -1
+    const current = featureIndex(payload).get(store.get('selectedFeature'));
+    const next = current === undefined
       ? (step < 0 ? last : 0)      // nothing picked yet: enter from that edge
       : Math.max(0, Math.min(last, current + step));
     context.onSelectFeature(payload.features[next]);

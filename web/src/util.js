@@ -117,6 +117,32 @@ export function settle(fn, wait = 140) {
   };
 }
 
+/** Which modifier keys are down right now, for handlers whose event does not
+ *  say (Plotly's region-selection event carries no mouse event). */
+export const modifiers = { shift: false, ctrl: false };
+const trackModifiers = (event) => {
+  modifiers.shift = event.shiftKey;
+  modifiers.ctrl = event.ctrlKey || event.metaKey;
+};
+for (const type of ['keydown', 'keyup', 'mousedown', 'mouseup']) {
+  window.addEventListener(type, trackModifiers, true);
+}
+window.addEventListener('blur', () => { modifiers.shift = false; modifiers.ctrl = false; });
+
+/** True for a click that extends a selection instead of replacing it. */
+export const isAdditive = (event) =>
+  Boolean(event && (event.ctrlKey || event.metaKey || event.shiftKey));
+
+/** Hand the browser a file to save. */
+export function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = el('a', { href: url, download: name, style: { display: 'none' } });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 export function field(label, control, hint) {
   return el('div', { class: 'field' }, [
     el('label', { text: label }),

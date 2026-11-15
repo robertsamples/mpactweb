@@ -1,6 +1,8 @@
 """Results: plot data, the feature table, database search, and downloads."""
 
+import csv
 import functools
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -9,7 +11,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
-from .. import config, plotdata
+from .. import config, plotdata, storage
 from .. import results as resultstore
 from ..core import csvcache, dbsearch, getfragdb
 from ..deps import get_results, get_run
@@ -17,6 +19,7 @@ from ..plotdata import feature as featuredata
 from ..plotdata import hits as hitdata
 from ..plotdata import msms as msmsdata
 from ..results import Memo, RunResults
+from ..schemas import FlagUpdate
 
 
 def _json_default(value):
@@ -114,7 +117,7 @@ def plot_payload(name: str, options: dict | None = None,
     try:
         key = (name, json.dumps(options, sort_keys=True, default=str),
                config.PVCLUST_NBOOT, config.MAX_SCATTER_POINTS, config.MAX_HEATMAP_CELLS,
-               _run_stamp(results))
+               config.MAX_HEATMAP_ROWS, _run_stamp(results))
     except (TypeError, ValueError):
         key = None
     try:
@@ -134,15 +137,84 @@ def feature_table(options: dict | None = None, run=Depends(get_run),
     """Paged/filtered/sorted feature table (the desktop's search tree)."""
     options = options or {}
     fragpath = _fragment_path(run)
-    ms2 = _fragment_ids(fragpath) if fragpath and options.get('ms2_only') else None
+    ms2, stamp = _ms2_restriction(fragpath, options)
     try:
-        table = featuredata.feature_table(results, options, ms2_ids=ms2)
+        table = featuredata.feature_table(results, options, ms2_ids=ms2, ms2_stamp=stamp)
         table['has_fragments'] = fragpath is not None
         return json_response(table)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _ms2_restriction(fragpath, options):
+    """The "MS/MS required" id set and the identity of the file it is from."""
+    if fragpath is None or not options.get('ms2_only'):
+        return None, None
+    return _fragment_ids(fragpath), _file_stamp(fragpath)
+
+
+@router.post('/features/export')
+def feature_export(options: dict | None = None, run=Depends(get_run),
+                   results: RunResults = Depends(get_results)):
+    """The feature table as a CSV: the view the options describe, or with
+    ``ids`` just those features. Takes the table's own options, so what is
+    exported is what is on screen, in the same order."""
+    options = options or {}
+    ids = options.get('ids')
+    if ids is not None and (not isinstance(ids, list) or len(ids) > featuredata.MAX_ROWS):
+        raise HTTPException(status_code=422, detail='ids must be a list of feature ids')
+    ms2, stamp = _ms2_restriction(_fragment_path(run), options)
+    try:
+        header, rows = featuredata.export_table(results, options, ms2_ids=ms2,
+                                                ms2_stamp=stamp, ids=ids)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator='\n')
+    writer.writerow(header)
+    writer.writerows([['' if value is None else value for value in row] for row in rows])
+    name = f'{results.stem}_{"selected" if ids is not None else "features"}.csv'
+    # With a byte-order mark, so a spreadsheet reads the Greek letters and
+    # primes in compound names as what they are.
+    return Response(content=buffer.getvalue().encode('utf-8-sig'), media_type='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+
+@router.get('/flags')
+def get_flags(results: RunResults = Depends(get_results)):
+    """The features flagged in this run, and the colour of each."""
+    return {'flags': results.flags()}
+
+
+@router.post('/flags')
+def set_flags(payload: FlagUpdate, results: RunResults = Depends(get_results)):
+    """Flag ``ids`` with ``colour``, or clear their flags when it is null.
+
+    Flags are kept with the run, so they are there from another browser and
+    are written into the feature export. Ids this run does not have are
+    ignored rather than stored.
+    """
+    path = results.flags_path
+    with resultstore.exclusive(path):       # two tabs flagging at once
+        flags = results.flags()
+        if payload.colour is None:
+            for compound in payload.ids:
+                flags.pop(compound, None)
+        else:
+            known = results.feature_positions()
+            for compound in payload.ids:
+                if compound in known:
+                    flags[compound] = payload.colour
+        if flags:
+            storage.write_text_atomic(path, json.dumps(flags))
+        else:
+            path.unlink(missing_ok=True)
+    return {'flags': flags}
 
 
 @router.get('/taxa')

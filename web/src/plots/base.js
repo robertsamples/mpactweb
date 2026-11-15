@@ -159,34 +159,37 @@ export function draw(surface, traces, layout, config = {}) {
   return Plotly.react(surface, traces, layout, { ...CONFIG, ...config });
 }
 
-/** Yellow selection marker, the web form of the desktop's
- *  `parent.highlight[currplt]` artist: one extra trace holding at most one
- *  point, updated in place as the selection moves between tabs. */
-export function highlightTrace(x, y) {
+/* The selection marker: a bright yellow disc, a little larger than the point
+ * it sits on, with a black outline -- the web form of the desktop's
+ * `parent.highlight[currplt]` artist. One extra trace holds every selected
+ * point, so a multiple selection is the same marker repeated, and moving or
+ * extending the selection only ever rewrites this one trace. */
+export const HIGHLIGHT = { fill: '#ffe600', outline: '#000000' };
+
+export function highlightTrace(points, size = 10) {
   return {
     type: 'scattergl',
     mode: 'markers',
-    x: x === null || x === undefined ? [] : [x],
-    y: y === null || y === undefined ? [] : [y],
-    marker: { size: 15, color: 'rgba(0,0,0,0)', line: { color: '#f2d024', width: 3 } },
+    x: points.map((point) => point.x),
+    y: points.map((point) => point.y),
+    marker: { size, color: HIGHLIGHT.fill, opacity: 1,
+              line: { color: HIGHLIGHT.outline, width: 1.5 } },
     hoverinfo: 'skip',
     showlegend: false,
     name: 'selection',
   };
 }
 
-/** A 3D selection marker: `highlightTrace`'s scattergl has no meaning inside
- *  a scene, so the ring is an outlined scatter3d point instead. */
-export function highlightTrace3d(x, y, z) {
-  const empty = x === null || x === undefined;
+/** The same marker inside a 3D scene, where scattergl has no meaning. */
+export function highlightTrace3d(points, size = 6) {
   return {
     type: 'scatter3d',
     mode: 'markers',
-    x: empty ? [] : [x],
-    y: empty ? [] : [y],
-    z: empty ? [] : [z],
-    marker: { size: 7, color: '#f2d024', opacity: 1,
-              line: { color: '#7a6410', width: 2 } },
+    x: points.map((point) => point.x),
+    y: points.map((point) => point.y),
+    z: points.map((point) => point.z),
+    marker: { size, color: HIGHLIGHT.fill, opacity: 1,
+              line: { color: HIGHLIGHT.outline, width: 2 } },
     hoverinfo: 'skip',
     showlegend: false,
     name: 'selection',
@@ -194,46 +197,64 @@ export function highlightTrace3d(x, y, z) {
 }
 
 /**
- * Draw a plot whose only per-selection change is where the highlight sits.
+ * Draw a plot whose only per-selection change is where the highlights sit.
  *
  * `signature` is the list of things the drawn traces depend on (the payload,
  * plus any live control that changes classification). While it is unchanged,
- * moving the selection restyles the single highlight trace in place; building
- * every point's colour and hover text again, and diffing the result through
- * `Plotly.react`, is what made a moved marker cost a full replot.
+ * changing the selection restyles the single highlight trace in place;
+ * building every point's colour and hover text again, and diffing the result
+ * through `Plotly.react`, is what made a moved marker cost a full replot.
  *
  * `build()` returns `{traces, layout, config}` and is called only when a real
- * redraw is needed. The highlight is appended by this function, so it is
- * always the trace named 'selection'.
+ * redraw is needed. `points` is the selected points' coordinates (`{x, y}`,
+ * plus `z` in a scene); the highlight is appended by this function, so it is
+ * always the trace named 'selection'. `options.flags` is the flagged points,
+ * each with its `colour`, drawn the same way in the trace named 'flags'.
  */
-export function drawSelectable(surface, signature, build, point, options = {}) {
+export function drawSelectable(surface, signature, build, points, options = {}) {
   const previous = surface._selectionSignature;
   const unchanged = surface._plotly && Array.isArray(previous)
     && previous.length === signature.length
     && previous.every((value, i) => value === signature[i]);
 
+  const placed = (list) => (Array.isArray(list) ? list : list ? [list] : [])
+    .filter((point) => point && point.x !== null && point.x !== undefined
+                       && point.y !== null && point.y !== undefined
+                       && (!options.marker3d || (point.z !== null && point.z !== undefined)));
   const make = options.marker3d ? highlightTrace3d : highlightTrace;
-  const coords = point ? [point.x, point.y, point.z] : [];
+  const marker = make(placed(points), options.size);
+
+  // Flagged features: the same disc, each in its flag's colour, in a trace
+  // of their own underneath the selection -- so a feature that is flagged
+  // and selected shows as selected, and its flag is back when it is not.
+  const flagged = placed(options.flags);
+  const flagMarker = make(flagged, options.size);
+  flagMarker.name = 'flags';
+  flagMarker.marker.color = flagged.map((point) => point.colour);
 
   if (unchanged) {
-    const index = (surface.data || []).findIndex((trace) => trace.name === 'selection');
-    if (index !== -1) {
-      const update = { x: [coords.length ? [coords[0]] : []],
-                       y: [coords.length ? [coords[1]] : []] };
-      if (options.marker3d) update.z = [coords.length ? [coords[2]] : []];
-      Plotly.restyle(surface, update, [index]);
+    const data = surface.data || [];
+    const flagIndex = data.findIndex((trace) => trace.name === 'flags');
+    const index = data.findIndex((trace) => trace.name === 'selection');
+    if (index !== -1 && flagIndex !== -1) {
+      const update = { x: [flagMarker.x, marker.x], y: [flagMarker.y, marker.y],
+                       'marker.color': [flagMarker.marker.color, marker.marker.color] };
+      if (options.marker3d) update.z = [flagMarker.z, marker.z];
+      Plotly.restyle(surface, update, [flagIndex, index]);
       return true;
     }
   }
 
   const { traces, layout, config } = build();
-  traces.push(make(...(coords.length ? coords : [null, null, null])));
+  traces.push(flagMarker, marker);
   draw(surface, traces, layout, config);
   surface._selectionSignature = signature;
   return false;
 }
 
-/** Wire click-to-select. `resolve(point)` returns the compound id, or null. */
+/** Wire click-to-select. `resolve(point)` returns the compound id, or null.
+ *  `onPick` also gets the mouse event, so a Ctrl- or Shift-click can add to
+ *  the selection instead of replacing it. */
 export function onSelect(surface, resolve, onPick) {
   if (!surface._plotly || !surface.on) return;
   surface.removeAllListeners?.('plotly_click');
@@ -241,7 +262,7 @@ export function onSelect(surface, resolve, onPick) {
     const point = event.points && event.points[0];
     if (!point) return;
     const id = resolve(point);
-    if (id) onPick(id);
+    if (id) onPick(id, event.event);
   });
 }
 

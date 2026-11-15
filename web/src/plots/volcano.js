@@ -89,12 +89,21 @@ export function volcano(surface, payload, context, options = {}) {
   }
   const traces = cache.traces;
 
-  const selected = context.selectedFeature;
-  let point = null;
-  if (selected) {
+  const selected = context.selectedFeatures;
+  const points = [];
+  if (selected && selected.size) {
     for (const key of ['up', 'down', 'ns']) {
-      const hit = buckets[key].find((p) => p.id === selected);
-      if (hit) { point = hit; break; }
+      for (const point of buckets[key]) if (selected.has(point.id)) points.push(point);
+    }
+  }
+
+  const flagged = [];
+  if (context.flags && context.flags.size) {
+    for (const key of ['up', 'down', 'ns']) {
+      for (const point of buckets[key]) {
+        const colour = context.flags.get(point.id);
+        if (colour) flagged.push({ x: point.x, y: point.y, colour });
+      }
     }
   }
 
@@ -129,7 +138,7 @@ export function volcano(surface, payload, context, options = {}) {
       shapes,
     }),
     config: imageFormat('volcano'),
-  }), point);
+  }), points, { flags: flagged });
 
   if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
   return { up: buckets.up.length, down: buckets.down.length, ns: buckets.ns.length };

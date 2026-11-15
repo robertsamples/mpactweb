@@ -640,12 +640,22 @@ function filteringView() {
 // Analysis Settings (calculations, plots, Plot Feature Sets, database)
 // --------------------------------------------------------------------------
 
+// Groups picked in the bucket lists, to be moved together. Kept outside the
+// editor because the editor is rebuilt after every change.
+const pickedGroups = new Set();
+let pickAnchor = null;        // {bucket, group} a Shift-click extends from
+let pickedIn = -1;            // the feature set the picks belong to
+
 function groupsetEditor() {
   const groups = store.get('groups');
   const groupsets = store.get('groupsets');
   const selected = store.get('selectedGroupset');
   const current = groupsets[selected];
   const wrap = el('div', { class: 'groupsets' });
+
+  // Picks do not carry over to another feature set, or outlive their groups.
+  if (pickedIn !== selected) { pickedGroups.clear(); pickAnchor = null; pickedIn = selected; }
+  for (const group of [...pickedGroups]) if (!groups.includes(group)) pickedGroups.delete(group);
 
   // --- list ---------------------------------------------------------
   const list = el('ul');
@@ -711,22 +721,79 @@ function groupsetEditor() {
     ['incl', 'Must be in', 'feature must be in ALL of these'],
   ];
 
-  const move = (group, to) => {
+  /** Move one or several groups to a bucket, keeping the dataset's order. */
+  const move = (moving, to) => {
+    const going = new Set(moving);
     const patch = { src: [...current.src], incl: [...current.incl], excl: [...current.excl] };
-    for (const key of ['src', 'incl', 'excl']) patch[key] = patch[key].filter((g) => g !== group);
-    patch[to] = [...patch[to], group];
+    for (const key of ['src', 'incl', 'excl']) patch[key] = patch[key].filter((g) => !going.has(g));
+    patch[to] = [...patch[to], ...groups.filter((g) => going.has(g))];
+    pickedGroups.clear();
+    pickAnchor = null;
     store.updateGroupset(selected, patch);
     refreshAnalysis();
+  };
+
+  // Picking works like a file list: click picks one, Ctrl-click adds or
+  // removes one, Shift-click picks the run from the last one clicked. What
+  // is picked then moves together, by dragging any of it or with the
+  // buttons underneath. Classes are updated in place so a click does not
+  // rebuild the lists under the pointer.
+  const rows = new Map();          // group -> its <li>
+  const moveButtons = [];
+  const pickedNote = el('span', { class: 'muted pick-note' });
+  const syncPicked = () => {
+    for (const [group, row] of rows) row.classList.toggle('selected', pickedGroups.has(group));
+    for (const button of moveButtons) button.disabled = !pickedGroups.size;
+    pickedNote.textContent = pickedGroups.size
+      ? `${pickedGroups.size} selected — move to:`
+      : 'Click groups to select them (Shift or Ctrl for several), then drag or move to:';
+  };
+  const pick = (group, key, event) => {
+    const list = current[key];
+    const additive = event.ctrlKey || event.metaKey;
+    if (event.shiftKey && pickAnchor && pickAnchor.bucket === key
+        && list.includes(pickAnchor.group)) {
+      const from = list.indexOf(pickAnchor.group);
+      const to = list.indexOf(group);
+      if (!additive) pickedGroups.clear();
+      for (const item of list.slice(Math.min(from, to), Math.max(from, to) + 1)) {
+        pickedGroups.add(item);
+      }
+    } else if (additive) {
+      if (pickedGroups.has(group)) pickedGroups.delete(group);
+      else pickedGroups.add(group);
+      pickAnchor = { bucket: key, group };
+    } else {
+      const wasOnlyPick = pickedGroups.size === 1 && pickedGroups.has(group);
+      pickedGroups.clear();
+      if (!wasOnlyPick) pickedGroups.add(group);
+      pickAnchor = { bucket: key, group };
+    }
+    syncPicked();
   };
 
   const bucketNodes = el('div', { class: 'group-buckets' });
   for (const [key, title, hint] of buckets) {
     const items = el('ul');
     for (const group of current[key]) {
-      items.append(el('li', {
-        draggable: true, text: group, title: 'Drag to another list',
-        on: { dragstart: (event) => event.dataTransfer.setData('text/plain', group) },
-      }));
+      const row = el('li', {
+        draggable: true, text: group,
+        title: 'Click to select (Shift or Ctrl for several); drag to another list',
+        on: {
+          click: (event) => pick(group, key, event),
+          // Shift-click would otherwise select the text in between.
+          mousedown: (event) => { if (event.shiftKey) event.preventDefault(); },
+          dragstart: (event) => {
+            // Dragging a picked group takes every picked group with it.
+            const moving = pickedGroups.has(group)
+              ? groups.filter((g) => pickedGroups.has(g)) : [group];
+            event.dataTransfer.setData('text/plain', JSON.stringify(moving));
+            event.dataTransfer.effectAllowed = 'move';
+          },
+        },
+      });
+      rows.set(group, row);
+      items.append(row);
     }
     const bucket = el('div', { class: 'bucket' }, [
       el('h4', { text: title, title: hint }),
@@ -740,12 +807,32 @@ function groupsetEditor() {
     bucket.addEventListener('drop', (event) => {
       event.preventDefault();
       bucket.classList.remove('dragover');
-      const group = event.dataTransfer.getData('text/plain');
-      if (group) move(group, key);
+      const raw = event.dataTransfer.getData('text/plain');
+      let moving = [raw];
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) moving = parsed;
+      } catch { /* a plain group name */ }
+      // Only this dataset's groups: a drop can carry any text at all.
+      moving = moving.filter((group) => groups.includes(group));
+      if (moving.length) move(moving, key);
     });
     bucketNodes.append(bucket);
   }
   editor.append(bucketNodes);
+
+  const moveRow = el('div', { class: 'btn-row move-row', style: { marginTop: '8px' } }, [pickedNote]);
+  for (const [key, title] of buckets) {
+    const button = el('button', {
+      class: 'btn small', type: 'button', text: title,
+      on: { click: () => { if (pickedGroups.size) move([...pickedGroups], key); } },
+    });
+    moveButtons.push(button);
+    moveRow.append(button);
+  }
+  editor.append(moveRow);
+  syncPicked();
+
   editor.append(el('div', { class: 'btn-row', style: { marginTop: '10px' } }, [
     el('button', {
       class: 'btn small', text: 'Plot every feature',
@@ -905,6 +992,16 @@ function runView() {
     }
 
     const running = run && (run.state === 'running' || run.state === 'queued');
+    // A name for the run about to start, so a parameter sweep is more than a
+    // list of identical peak-table names in the run history.
+    summaryPanel.append(el('label', { class: 'run-label' }, [
+      el('span', { class: 'muted', text: 'Label' }),
+      el('input', {
+        type: 'text', maxLength: 120, value: store.get('runLabel') || '',
+        placeholder: 'optional, e.g. "CV 0.3, no in-source filter"',
+        on: { input: (event) => store.set({ runLabel: event.target.value }) },
+      }),
+    ]));
     summaryPanel.append(el('div', { class: 'btn-row' }, [
       el('button', {
         class: 'btn primary',
@@ -988,10 +1085,12 @@ function runView() {
         fragments: inputs.fragments || null,
       },
       settings: { ...settings(), groupsets: store.get('groupsets') },
+      label: (store.get('runLabel') || '').trim() || null,
     };
     try {
       const body = await api.createRun(payload);
-      store.set({ run: { run_id: body.run_id, state: 'queued', stage: 'queued' },
+      store.set({ run: { run_id: body.run_id, state: 'queued', stage: 'queued',
+                         label: payload.label },
                   catalogue: null, selectedFeature: null });
       watchRun(body.run_id);
     } catch (error) {
@@ -1066,6 +1165,45 @@ export function buildSetupViews() {
     refreshRun();
     deriveGroups();
   })();
+}
+
+/** Put a previous run's settings, feature sets and input files back in the
+ *  form, ready to change and run again.
+ *
+ *  Returns the kinds of input that could not be restored (the library file
+ *  has since been removed); those slots are left empty to be filled. */
+export async function applyRunRequest(request) {
+  const [defaults, files] = await Promise.all([api.defaults(), api.listFiles()]);
+  const inputsOf = request.inputs || {};
+  const inputs = { peaktable: null, samplelist: null, metadata: null, fragments: null };
+  const missing = [];
+  for (const kind of Object.keys(inputs)) {
+    if (!inputsOf[kind]) continue;
+    // The same library file if it is still there; otherwise one of the same
+    // kind and name (it may have been uploaded again since).
+    const record = files.find((file) => file.id === inputsOf[kind])
+      || files.find((file) => file.kind === kind && file.name === inputsOf[`${kind}_name`]);
+    if (record) inputs[kind] = record.id;
+    else missing.push(kind);
+  }
+
+  // Only the settings this version of the form has: an old run can carry
+  // fields that have since gone, and the server rejects unknown ones.
+  const { groupsets = [], ...saved } = request.settings || {};
+  const restored = { ...defaults.settings };
+  delete restored.groupsets;
+  for (const key of Object.keys(restored)) if (key in saved) restored[key] = saved[key];
+
+  store.set({ files, inputs, settings: restored, groupsets,
+              selectedGroupset: groupsets.length ? 0 : -1,
+              runLabel: request.label || '' });
+  store.persistSetup();
+  refreshFiles();
+  refreshFiltering();
+  refreshAnalysis();
+  refreshRun();
+  deriveGroups();
+  return missing;
 }
 
 export const refreshSetupViews = () => {

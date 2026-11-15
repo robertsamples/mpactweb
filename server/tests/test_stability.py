@@ -383,3 +383,64 @@ def test_references_are_told_apart_by_serial_not_address():
     from app.plotdata import hits
     assert 'ref.serial' in inspect.getsource(hits.hit_index)
     assert 'id(ref)' not in inspect.getsource(hits.hit_index)
+
+
+# --- the run log ------------------------------------------------------------
+
+def _progress_log(tmp_path, existing=b''):
+    from app.runner import ProgressLog
+    path = tmp_path / 'log.txt'
+    path.write_bytes(existing)
+    handle = open(path, 'ab', buffering=0)
+    return path, handle, ProgressLog(handle)
+
+
+def test_a_progress_bar_is_logged_once_in_its_latest_state(tmp_path):
+    """tqdm redraws a bar by returning to the start of the line. The log has
+    the bar as a terminal would show it, not every redraw end to end."""
+    path, handle, log = _progress_log(tmp_path, b'from an earlier attempt\n')
+    with handle:
+        log.write('Averaging groups\n')
+        for done in range(4):
+            log.write(f'\rchunks: {done}/3')
+            assert path.read_bytes().split(b'\n')[-1] == f'chunks: {done}/3'.encode(), \
+                'mid-run the last line is the bar as it stands'
+        log.write('\n')
+        log.write('Parsing ion lists\r\n')          # a Windows line ending is one line break
+        log.write('\rbar that clears itself')
+        log.write('\r                      \r')      # tqdm(leave=False) blanks its line
+        log.write('done\n')
+    assert path.read_bytes() == (b'from an earlier attempt\nAveraging groups\nchunks: 3/3\n'
+                                 b'Parsing ion lists\ndone\n')
+
+
+def test_two_streams_share_the_log_in_order(tmp_path):
+    from app.runner import _Tee
+    path, handle, log = _progress_log(tmp_path)
+    with handle:
+        out, err = _Tee(None, log), _Tee(None, log)
+        out.write('step one\n')
+        err.write('\rbar 1/2')
+        err.write('\rbar 2/2')
+        err.write('\n')
+        out.write('step two\n')
+        err.flush()
+    assert path.read_bytes() == b'step one\nbar 2/2\nstep two\n'
+
+
+def test_a_real_tqdm_bar_ends_as_one_line(tmp_path):
+    tqdm = pytest.importorskip('tqdm').tqdm
+    path, handle, log = _progress_log(tmp_path)
+    with handle:
+        for _ in tqdm(range(25), desc='Processing chunks', file=log, mininterval=0):
+            pass
+    lines = path.read_bytes().decode('utf-8').split('\n')
+    assert lines[0].startswith('Processing chunks: 100%') and lines[0].count('Processing') == 1
+    assert lines[1:] == ['']
+
+
+def test_logs_written_before_this_are_settled_when_read():
+    from app.routers.runs import settle_progress
+    old = 'Filtering\r\nbar:   0%|   |\rbar:  50%|#  |\rbar: 100%|###|\r\nnext\r\n'
+    assert settle_progress(old) == 'Filtering\nbar: 100%|###|\nnext\n'
+    assert settle_progress('plain\nlog\n') == 'plain\nlog\n'

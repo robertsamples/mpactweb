@@ -14,7 +14,7 @@
  */
 
 import { api } from '../api.js';
-import { store } from '../state.js';
+import { selection, store } from '../state.js';
 import { clear, el, num, settle } from '../util.js';
 
 const runId = () => (store.get('run') || {}).run_id;
@@ -56,6 +56,10 @@ export function createStatusBar() {
       if (f.fc != null) node.append(...slot('FC:', num(f.fc, 3)));
     }
 
+    if (!sampleView && selection.count() > 1) {
+      node.append(...slot('Selected:', `${selection.count().toLocaleString()} features`));
+    }
+
     node.append(el('span', { class: 'spacer' }));
     const anything = sampleView ? sample : compound;
     if (anything) {
@@ -92,8 +96,8 @@ export function createStatusBar() {
     fill(mine, id, compound);
   };
 
-  store.on(['selectedFeature', 'selectedSample', 'selectedSampleGroup', 'run', 'view'],
-           refresh);
+  store.on(['selectedFeature', 'selectedFeatures', 'selectedSample', 'selectedSampleGroup',
+            'run', 'view'], refresh);
   refresh();
   return { node, refresh };
 }

@@ -10,7 +10,9 @@
  */
 
 import { api } from '../api.js';
-import { store } from '../state.js';
+import { exportSelected } from '../export.js';
+import { flagControls, flags, toggleFlag } from '../flags.js';
+import { selection, store } from '../state.js';
 import { collapsible, makeRowResizer } from '../components.js';
 import { clear, el, num } from '../util.js';
 import { FEATURE_FIELDS } from '../fields.js';
@@ -70,8 +72,63 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       title: 'Hide the details panel', on: { click: () => onCollapse && onCollapse() },
     }),
   ]);
-  node.append(header, sections);
+  // With several features selected the top of the rail becomes the
+  // selection: how many, the list (click one to inspect it below), and the
+  // export. The sections underneath go on describing the focused feature.
+  const selectionBox = el('div', { class: 'rail-selection hidden' });
+  node.append(header, selectionBox, sections);
   applyWidth();
+
+  const LISTED = 150;       // names shown; a lasso can select thousands
+
+  function renderSelection() {
+    const ids = selection.ids();
+    const several = ids.length > 1;
+    selectionBox.classList.toggle('hidden', !several);
+    clear(selectionBox);
+    if (!several) return;
+    const focused = store.get('selectedFeature');
+
+    const list = el('div', { class: 'selection-list' }, ids.slice(0, LISTED).map((id) =>
+      el('div', { class: `selection-item ${id === focused ? 'active' : ''}`.trim() }, [
+        el('button', {
+          class: 'selection-name', type: 'button', text: id, title: 'Show this feature below',
+          on: { click: () => selection.focus(id) },
+        }),
+        el('button', {
+          class: 'selection-remove', type: 'button', text: '×',
+          title: 'Remove from the selection', on: { click: () => selection.remove(id) },
+        }),
+      ])));
+    if (ids.length > LISTED) {
+      list.append(el('div', { class: 'selection-more muted',
+                              text: `… and ${(ids.length - LISTED).toLocaleString()} more` }));
+    }
+
+    selectionBox.append(
+      el('div', { class: 'selection-head' }, [
+        el('strong', { text: `${ids.length.toLocaleString()} features selected` }),
+        el('span', { class: 'spacer' }),
+        el('button', {
+          class: 'btn small', type: 'button', text: 'Export CSV',
+          title: 'Save the selected features, with their best database matches',
+          on: { click: (event) => exportSelected(event.currentTarget) },
+        }),
+        el('button', {
+          class: 'btn small', type: 'button', text: 'Clear', title: 'Deselect everything',
+          on: { click: () => selection.clear() },
+        }),
+      ]),
+      // Flag them: a lasso on a plot can be marked without a trip to the table.
+      el('div', { class: 'selection-flag' }, [flagControls().node]),
+      list);
+    revealIn(list, list.querySelector('.selection-item.active'));
+  }
+  store.on(['selectedFeatures', 'selectedFeature', 'flags'], renderSelection);
+
+  // The focused feature's own flag, in its heading.
+  let paintFlag = null;
+  store.on('flags', () => { if (paintFlag) paintFlag(); });
 
   let token = 0;
 
@@ -121,13 +178,36 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     rendered = key;
 
     const mine = ++token;
+    // Where you had the rail scrolled to, so the next feature opens at the
+    // same place: stepping through features to compare their hit structures
+    // should not mean scrolling back down to the matches every time.
+    if (node.classList.contains('empty')) wantedTop = 0;
+    const keepTop = wantedTop;
     node.classList.remove('empty');
+
+    const flagDot = el('span', { class: 'flag-dot' });
+    const flagButton = el('button', {
+      class: 'flag-toggle', type: 'button', on: { click: () => toggleFlag(compound) },
+    }, [flagDot]);
+    paintFlag = () => {
+      const colour = flags.colourOf(compound);
+      flagDot.style.background = colour || 'transparent';
+      flagButton.classList.toggle('flagged', Boolean(colour));
+      flagButton.title = colour ? 'Flagged: click to unflag' : 'Flag this feature';
+    };
+    paintFlag();
 
     const heading = el('div', { class: 'rail-head' }, [
       el('h4', { text: compound }),
+      flagButton,
       el('button', {
-        class: 'btn small', text: '×', title: 'Clear selection', type: 'button',
-        on: { click: () => store.set({ selectedFeature: null }) },
+        class: 'btn small', text: '×', type: 'button',
+        title: selection.count() > 1 ? 'Remove this feature from the selection'
+                                     : 'Clear selection',
+        // Among several, closing one feature takes that one out; the focus
+        // moves to another and the rest stay selected.
+        on: { click: () => (selection.count() > 1 ? selection.remove(compound)
+                                                  : selection.clear()) },
       }),
     ]);
 
@@ -274,15 +354,61 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         }),
       ]));
     }
-    clear(sections).append(...children);
+    // The new sections start as short "Loading..." placeholders, and with
+    // the content that short the browser has nowhere to scroll to: it reset
+    // the rail to the top on every new feature. A spacer at the end keeps the
+    // content as tall as it was until the sections have filled in, so the
+    // scroll position holds; then it is taken away.
+    const hold = el('div', { class: 'rail-hold', 'aria-hidden': 'true' });
+    clear(sections).append(...children, hold);
+    if (keepTop > 0) {
+      // How tall the new content is, measured to the spacer. (Not from
+      // scrollHeight: that never reads less than the rail's own height, so
+      // while the content was shorter than the window the spacer came out
+      // too small, and the position was lost anyway.)
+      const box = sections.getBoundingClientRect();
+      const used = hold.getBoundingClientRect().top - box.top + sections.scrollTop
+        + (parseFloat(getComputedStyle(sections).paddingBottom) || 0);
+      hold.style.height = `${Math.max(0, keepTop + sections.clientHeight - used)}px`;
+      scrollRailTo(keepTop);
+    }
 
+    const loads = [];
     for (const [open, load] of [[identitySection.isOpen(), loadIdentity],
                                 [abundanceSection.isOpen(), loadAbundance],
                                 [spectrumSection.isOpen(), loadSpectrum],
                                 [matchesSection.isOpen(), loadMatches]]) {
-      if (open) load();
+      if (open) loads.push(load());
     }
+    await Promise.allSettled(loads);
+    // The structure drawing arrives after its match does; wait for it too
+    // (briefly -- a slow render must not pin the spacer in place).
+    await imagesLoaded(sections, 3000);
+    if (mine !== token || !hold.isConnected) return;
+    const top = sections.scrollTop;
+    hold.remove();
+    // A shorter feature clamps this to its bottom, which is as near to the
+    // place as it has. `wantedTop` is left alone, so the next feature that is
+    // long enough opens at the place itself again.
+    scrollRailTo(top);
   };
+
+  // Where you last scrolled the rail to. Positions the rail sets itself are
+  // told apart from yours by remembering what it set, so a clamp to a short
+  // feature's bottom is not mistaken for you scrolling up.
+  let wantedTop = 0;
+  let setTop = null;
+  function scrollRailTo(top) {
+    sections.scrollTop = top;
+    setTop = sections.scrollTop;          // after any clamping
+  }
+  sections.addEventListener('scroll', () => {
+    if (setTop !== null && Math.abs(sections.scrollTop - setTop) <= 1) return;
+    setTop = null;
+    // While a feature is still loading the spacer is in, and the range is
+    // the held one: a scroll then is still yours.
+    wantedTop = sections.scrollTop;
+  }, { passive: true });
 
   /** A plot panel whose bottom edge can be dragged, so the space between the
    *  abundance chart and the spectrum below it is yours to divide. Heights
@@ -423,7 +549,9 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         // rather than through every hit in it.
         row.tabIndex = i === index ? 0 : -1;
       });
-      rows[index].scrollIntoView({ block: 'nearest' });
+      // Scrolls the hit list only. scrollIntoView would scroll every
+      // container above it as well -- the whole rail included.
+      revealIn(list, rows[index]);
       position.textContent = `${index + 1} of ${items.length}`;
       if (source.onShow) source.onShow(match);
 
@@ -481,6 +609,36 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       applyWidth();
     },
   };
+}
+
+
+/** Scroll `container` (and nothing else) so that `child` is in view. Before
+ *  the container is on the page there is nothing to measure, so it waits a
+ *  frame -- a list built off-screen still opens at its active row. */
+function revealIn(container, child) {
+  if (!container || !child) return;
+  if (!container.isConnected) {
+    requestAnimationFrame(() => { if (container.isConnected) revealIn(container, child); });
+    return;
+  }
+  const box = container.getBoundingClientRect();
+  const item = child.getBoundingClientRect();
+  if (item.top < box.top) container.scrollTop -= box.top - item.top;
+  else if (item.bottom > box.bottom) container.scrollTop += item.bottom - box.bottom;
+}
+
+/** Resolves when every image inside `root` has loaded (or failed), or after
+ *  `timeout` ms, whichever is first. */
+function imagesLoaded(root, timeout) {
+  const pending = [...root.querySelectorAll('img')].filter((img) => !img.complete);
+  if (!pending.length) return Promise.resolve();
+  return Promise.race([
+    Promise.all(pending.map((img) => new Promise((resolve) => {
+      img.addEventListener('load', resolve, { once: true });
+      img.addEventListener('error', resolve, { once: true });
+    }))),
+    new Promise((resolve) => setTimeout(resolve, timeout)),
+  ]);
 }
 
 

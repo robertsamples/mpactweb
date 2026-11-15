@@ -7,6 +7,7 @@
 
 import { api } from './api.js';
 import { store } from './state.js';
+import { loadFlags } from './flags.js';
 import { $, clear, el, settle, toast } from './util.js';
 import { makeSplitter } from './components.js';
 import { buildSetupViews } from './views/setup.js';
@@ -246,7 +247,8 @@ export function watchRun(runId) {
 
 export async function loadCatalogue(runId) {
   try {
-    const catalogue = await api.catalogue(runId);
+    // The run's flags come with it, so the first plot drawn already has them.
+    const [catalogue] = await Promise.all([api.catalogue(runId), loadFlags(runId)]);
     store.set({ catalogue });
   } catch (error) {
     store.set({ catalogue: null });
@@ -261,7 +263,7 @@ export async function selectRun(runId) {
   const status = await api.runStatus(runId);
   if (mine !== pollToken) return;
   store.set({ run: status, selectedFeature: null, selectedSample: null,
-              selectedSampleGroup: null, catalogue: null });
+              selectedSampleGroup: null, catalogue: null, flags: {} });
   if (status.state === 'running' || status.state === 'queued') {
     // Not viewable yet; the store listener in boot() has already moved a
     // result view over to Run, and the watch takes it from here.

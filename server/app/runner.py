@@ -23,7 +23,9 @@ column, ``export_filtered_outputs``, ``write_save``).
 import json
 import os
 import pickle
+import re
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -305,7 +307,8 @@ def child_main(session_id, run_id, log_path):
     live log instead of an opaque spinner.
     """
     os.environ.setdefault('MPLBACKEND', 'Agg')
-    with open(log_path, 'a', encoding='utf-8', errors='replace', buffering=1) as log:
+    with open(log_path, 'ab', buffering=0) as handle:
+        log = ProgressLog(handle)
         sys.stdout = _Tee(sys.__stdout__, log)
         sys.stderr = _Tee(sys.__stderr__, log)
         try:
@@ -314,6 +317,58 @@ def child_main(session_id, run_id, log_path):
             sys.stdout = sys.__stdout__
             sys.stderr = sys.__stderr__
     return code
+
+
+class ProgressLog:
+    """The run log, written the way a terminal would show it.
+
+    The pipeline's progress bars (tqdm) redraw themselves by sending a
+    carriage return and writing the bar again over the old one. A terminal
+    obeys the carriage return; a file just keeps every redraw, end to end on
+    one line, which is what the Run view then showed: a bar's whole history
+    run together, hundreds of characters wide.
+
+    So the carriage return is obeyed here instead. The file position where
+    the current line began is remembered, and text that follows a carriage
+    return is written from there, replacing the line. The log holds each bar
+    once, in its latest state, and the Run view -- which re-reads the log
+    every couple of seconds -- shows it advancing in place.
+
+    Both output streams write through one of these, so their text stays in
+    the order it was produced.
+    """
+
+    def __init__(self, handle):
+        self._handle = handle               # binary, append, unbuffered
+        self._lock = threading.Lock()
+        self._line_start = handle.seek(0, os.SEEK_END)
+        self._returned = False              # a carriage return is pending
+
+    def write(self, text):
+        with self._lock:
+            for part in _LINE_BREAKS.split(text):
+                if not part:
+                    continue
+                if part == '\r':
+                    self._returned = True
+                elif part in ('\n', '\r\n'):
+                    # A return straight before a newline is just a line ending.
+                    self._returned = False
+                    self._handle.write(b'\n')
+                    self._line_start = self._handle.seek(0, os.SEEK_END)
+                else:
+                    if self._returned:
+                        self._returned = False
+                        self._handle.truncate(self._line_start)
+                        self._handle.seek(0, os.SEEK_END)
+                    self._handle.write(part.encode('utf-8', errors='replace'))
+        return len(text)
+
+    def flush(self):
+        pass                                # unbuffered: nothing is held back
+
+
+_LINE_BREAKS = re.compile('(\r\n|\n|\r)')
 
 
 class _Tee:

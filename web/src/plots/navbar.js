@@ -11,7 +11,7 @@
  * pan pushes the axis ranges, and the two buttons step through them.
  */
 
-import { el } from '../util.js';
+import { el, modifiers } from '../util.js';
 
 /* 16x16 line icons, drawn in the same visual language as the matplotlib
  * toolbar's: one stroke weight, round caps, no fills. */
@@ -82,13 +82,14 @@ const sameSnapshot = (a, b) => JSON.stringify(a) === JSON.stringify(b);
  * plot type (a 3D scene has no box select), restores the export format, and
  * re-attaches the Plotly listeners a purge would have dropped.
  */
-export function createNavbar(surface, { onClearSelection, isSelectionActive } = {}) {
+export function createNavbar(surface, { onClearSelection, isSelectionActive, onRegion } = {}) {
   const node = el('div', { class: 'plot-navbar' });
   const buttons = new Map();
   let history = [];
   let cursor = -1;
   let applying = false;
   let hasRegion = false;      // a box/lasso region is currently drawn
+  let releasing = false;      // Plotly's region styling is being taken off
 
   const plot = () => (surface._plotly && typeof window.Plotly !== 'undefined' ? surface : null);
   const is3d = () => Boolean(plot() && surface._fullLayout && surface._fullLayout.scene);
@@ -218,8 +219,10 @@ export function createNavbar(surface, { onClearSelection, isSelectionActive } = 
           button('forward', 'Forward to the next view', () => restore(cursor + 1))),
     group(button('pan', 'Pan', () => setMode('pan'), { toggle: true }),
           button('zoom', 'Zoom to rectangle', () => setMode('zoom'), { toggle: true }),
-          button('select', 'Box select', () => setMode('select'), { toggle: true }),
-          button('lasso', 'Lasso select', () => setMode('lasso'), { toggle: true })),
+          button('select', onRegion ? 'Box select features (hold Shift to add)' : 'Box select',
+                 () => setMode('select'), { toggle: true }),
+          button('lasso', onRegion ? 'Lasso select features (hold Shift to add)' : 'Lasso select',
+                 () => setMode('lasso'), { toggle: true })),
     group(button('clear', 'Cancel selection', clearSelection)),
     el('span', { class: 'spacer' }),
     group(formatSelect, button('save', 'Save image', save)),
@@ -266,7 +269,45 @@ export function createNavbar(surface, { onClearSelection, isSelectionActive } = 
       surface.removeAllListeners?.('plotly_deselect');
       surface.removeAllListeners?.('plotly_doubleclick');
       surface.on('plotly_relayout', () => { if (!applying) push(); });
-      surface.on('plotly_selected', () => { hasRegion = true; syncEnabled(); });
+      surface.on('plotly_selected', (event) => {
+        // On a feature plot a box or lasso *is* a selection: the features
+        // inside it become the app's selection (and so show in the table,
+        // the rail and every other plot). Plotly's own region styling, which
+        // dims everything outside it until cleared, is then taken back off
+        // -- the selection markers say the same thing without hiding the
+        // rest of the data.
+        const ids = onRegion && event && Array.isArray(event.points)
+          ? [...new Set(event.points
+            .filter((point) => point.data && point.data.name !== 'selection'
+                               && point.data.name !== 'flags'
+                               && typeof point.customdata === 'string')
+            .map((point) => point.customdata))]
+          : null;
+        if (ids) {
+          hasRegion = false;
+          // An empty region changes nothing. Taking Plotly's styling off
+          // (below) itself reports an empty region, and treating that as
+          // "select nothing" cleared the selection the lasso had just made;
+          // a drag across blank space should not throw a selection away
+          // either. Clear and Escape are how a selection is dropped.
+          if (ids.length && !releasing) {
+            onRegion(ids, modifiers.shift || modifiers.ctrl);
+            releasing = true;
+            setTimeout(() => {
+              try {
+                if (plot()) {
+                  Plotly.restyle(surface, { selectedpoints: [null] });
+                  Plotly.relayout(surface, { selections: [] });
+                }
+              } catch { /* a trace type with no selection support */ }
+              setTimeout(() => { releasing = false; }, 0);
+            }, 0);
+          }
+        } else {
+          hasRegion = true;
+        }
+        syncEnabled();
+      });
       surface.on('plotly_deselect', () => { hasRegion = false; syncEnabled(); });
       surface.on('plotly_doubleclick', () => { hasRegion = false; syncEnabled(); });
       if (cursor < 0) push();

@@ -271,6 +271,10 @@ class Reference(_Chemistry):
         self.smiles = atlas['compound_smiles'].fillna('').astype(str).to_numpy()
 
         names = atlas['compound_name'].fillna('').astype(str)
+        # As written, for the export's "top match" columns.
+        self.display_names = names.to_numpy()
+        self.formulas = (atlas['compound_molecular_formula'].fillna('').astype(str).to_numpy()
+                         if 'compound_molecular_formula' in atlas else np.array([''] * self.size))
         if 'synonyms' in atlas:
             names = names + '\n' + atlas['synonyms'].fillna('').astype(str)
         self.names = names.str.lower()
@@ -581,6 +585,74 @@ def passing_features(results, spec, compounds=None):
     if not searched:
         raise FileNotFoundError('no database is installed on this server')
     return passing
+
+
+def _allowed(ref, groups, spec):
+    """A mask over ``ref`` of the positions meeting ``spec`` (all of them
+    when there is no spec), given the candidate position arrays."""
+    if not spec:
+        return None
+    groups = [np.asarray(g, dtype=int) for g in groups if len(g)]
+    ok = np.zeros(ref.size, dtype=bool)
+    if groups:
+        ok[passing_positions(ref, np.unique(np.concatenate(groups)), spec)] = True
+    return ok
+
+
+def top_matches(results, compounds, spec=None):
+    """``{compound: (name, formula, ppm, organism)}`` -- each feature's
+    closest NPAtlas mass match, among those meeting ``spec`` when given.
+    Features with no match are left out."""
+    ref = reference(results.params())
+    index = hit_index(results, ref)
+    found = {compound: index[compound] for compound in compounds if compound in index}
+    ok = _allowed(ref, found.values(), spec)
+
+    iondict = results.iondict(copy=False)
+    where = results.feature_positions()
+    masses = pd.to_numeric(iondict['m/z'], errors='coerce').to_numpy(dtype=float)
+    species = ref.taxa['species'].to_numpy()
+
+    best = {}
+    for compound, positions in found.items():
+        if ok is not None:
+            positions = positions[ok[positions]]
+        if not len(positions):
+            continue
+        mass = masses[where[compound]]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ppm = np.fmin(np.abs(1e6 * (ref.mph[positions] - mass) / ref.mph[positions]),
+                          np.abs(1e6 * (ref.mna[positions] - mass) / ref.mna[positions]))
+        if not np.isfinite(ppm).any():
+            continue
+        at = int(np.nanargmin(ppm))
+        position = positions[at]
+        best[compound] = (str(ref.display_names[position]), str(ref.formulas[position]),
+                          round(float(ppm[at]), 3), str(species[position]))
+    return best
+
+
+def top_library_matches(results, compounds, spec=None):
+    """``{compound: (name, score)}`` -- each feature's highest-scoring MS/MS
+    library match from the run's last search, among those meeting ``spec``."""
+    from . import msms
+    record = msms.stored(results)
+    if record is None:
+        return {}
+    found = {compound: record['hits'][compound] for compound in compounds
+             if record['hits'].get(compound)}
+    ann = library_annotations() if spec else None
+    ok = _allowed(ann, [[hit[0] for hit in hits] for hits in found.values()], spec) \
+        if ann is not None else None
+    names = msms.library().meta['name'].to_numpy()
+    best = {}
+    for compound, hits in found.items():
+        # Stored best-first.
+        for index, score, _matched in hits:
+            if ok is None or ok[index]:
+                best[compound] = (str(names[index]), score)
+                break
+    return best
 
 
 def annotate_matches(params, matches, spec=None):

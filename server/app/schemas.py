@@ -134,12 +134,50 @@ class RunInputs(BaseModel):
     fragments: Optional[str] = None
 
 
+def _clean_label(value):
+    """A run label as stored: one line, trimmed, or None for none."""
+    if value is None:
+        return None
+    value = ' '.join(str(value).split())[:120]
+    return value or None
+
+
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     inputs: RunInputs
     settings: AnalysisSettings = Field(default_factory=AnalysisSettings)
     label: Optional[str] = None
+
+    _label = field_validator('label')(_clean_label)
+
+
+class FlagUpdate(BaseModel):
+    """Flag features with a colour, or (``colour`` null) take their flags off."""
+    model_config = ConfigDict(extra='forbid')
+
+    ids: list[str] = Field(max_length=100_000)
+    colour: Optional[str] = None
+
+    @field_validator('colour')
+    @classmethod
+    def _check_colour(cls, value):
+        if value is None:
+            return None
+        value = str(value).strip().lower()
+        if len(value) != 7 or value[0] != '#' or any(c not in '0123456789abcdef'
+                                                     for c in value[1:]):
+            raise ValueError('colour must be a #rrggbb hex string')
+        return value
+
+
+class RunLabel(BaseModel):
+    """A new label for an existing run."""
+    model_config = ConfigDict(extra='forbid')
+
+    label: Optional[str] = None
+
+    _label = field_validator('label')(_clean_label)
 
 
 class LoginRequest(BaseModel):
