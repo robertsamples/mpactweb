@@ -46,9 +46,9 @@ export function openCredits() {
                       + 'filter, and the revised isotope filter.' }),
 
       el('h4', { text: 'Original MPACT' }),
-      el('p', { text: 'Robert M. Samples - Algorithms, UI design, and benchmarking.'
-                      + ' Sara P. Puckett - UI design, testing, and benchmarking.'
-                      + ' Marcy J. Balunas (University of Michigan) - Project supervision.' }),
+      el('p', { class: 'credit-line', text: 'Robert M. Samples - Algorithms, UI design, and benchmarking.' }),
+      el('p', { class: 'credit-line', text: 'Sara P. Puckett - UI design, testing, and benchmarking.' }),
+      el('p', { text: 'Marcy J. Balunas (University of Michigan) - Project supervision.' }),
       el('p', { class: 'muted',
                 text: 'The original work was supported by National Science Foundation grant '
                       + 'IOS-1557914 and the Gordon and Betty Moore Foundation.' }),
@@ -57,9 +57,12 @@ export function openCredits() {
       el('p', {}, [citation()]),
 
       el('p', { class: 'muted credits-foot' }, [
-        'Free and open source under GPLv3. ',
+        'Free and open source under GPLv3. Source Code: ',
         el('a', { href: 'https://github.com/robertsamples/mpact', target: '_blank', rel: 'noopener',
-                  text: 'Source code' }),
+                  text: 'Core' }),
+        ' ',
+        el('a', { href: 'https://github.com/robertsamples/mpactweb', target: '_blank', rel: 'noopener',
+                  text: 'Web' }),
       ]),
     ]);
     // Clicking the backdrop closes the dialog.
@@ -72,7 +75,8 @@ export function openCredits() {
 /** Citation and Credits link for the sign-in screen. */
 export function citeFooter() {
   return el('div', { class: 'login-cite' }, [
-    el('p', {}, [el('span', { class: 'cite-lead', text: 'If you use MPACT, please cite: ' }), citation()]),
+    el('p', {}, [el('span', { class: 'cite-lead', text: 'If you use MPACT, please cite:' }), el('br'),
+                 citation()]),
     el('button', { class: 'link-button', type: 'button', text: 'Credits',
                    on: { click: openCredits } }),
   ]);

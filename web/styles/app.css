@@ -1204,5 +1204,5 @@ dialog.credits h4 {
   text-transform: uppercase; color: var(--muted);
 }
 dialog.credits p { margin: 0 0 8px; }
-dialog.credits .credit-person { margin-bottom: 1px; }
+dialog.credits .credit-person, dialog.credits .credit-line { margin-bottom: 1px; }
 dialog.credits .credits-foot { margin: 16px 0 0; }

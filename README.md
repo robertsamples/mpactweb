@@ -369,5 +369,29 @@ not have.
 
 ## Licence
 
-MPACT is GPLv3; this front end inherits that. See the upstream repository for
-the full text and citation guidance.
+MPACT Web is released under the [GNU General Public License version 3](LICENSE).
+
+It includes the MPACT core modules from
+[robertsamples/mpact](https://github.com/robertsamples/mpact) in
+`server/mpact_core/`, unmodified:
+
+- Copyright 2022, Robert M. Samples, Sara P. Puckett, and Marcy J. Balunas
+- Modifications Copyright 2026, Robert M. Samples and Yilu Chen
+
+Each module's header says which applies to it. MPACT was first released as
+[BalunasLab/mpact](https://github.com/BalunasLab/mpact) in 2022, labelled
+GPLv2; it depended on PyQt5 (GPLv3), and the core repository has corrected
+the label to GPLv3.
+
+Plotly.js (MIT) and JSME (BSD) are downloaded by `scripts/fetch_web_vendor.py`,
+not kept in this repository, and keep their own licence notices.
+
+## Citation
+
+If you use MPACT, please cite:
+
+Samples, R. M.; Puckett, S. P.; Balunas, M. J. Metabolomics Peak Analysis
+Computational Tool (MPACT): An Advanced Informatics Tool for Metabolomics and
+Data Visualization of Molecules from Complex Biological Samples. *Anal. Chem.*
+**2023**, *95* (23), 8770–8779.
+[doi:10.1021/acs.analchem.2c04632](https://doi.org/10.1021/acs.analchem.2c04632)

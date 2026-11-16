@@ -280,6 +280,7 @@ def client(tmp_path_factory):
     root = tmp_path_factory.mktemp('mpact-beta')
     os.environ['MPACT_DATA_ROOT'] = str(root)
     os.environ['MPACT_DEV'] = '1'
+    os.environ['MPACT_PVCLUST_NBOOT'] = '50'
     from fastapi.testclient import TestClient
 
     from app import config
@@ -373,3 +374,14 @@ def test_a_run_without_beta_filters_shows_none_of_their_classes(client):
     assert not any('beta' in label for label in labels)
     keys = [item['key'] for item in client.get(f'/api/runs/{run_id}/downloads').json()]
     assert 'adduct_attribution' not in keys
+
+
+def test_the_bootstrap_dendrogram_has_support_for_every_branch(client, beta_run):
+    for view in ('Technical Replicates', 'Biological Replicates'):
+        response = client.post(f'/api/runs/{beta_run}/plots/dendrogram',
+                               json={'bootstrap': True, 'view': view})
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        values = payload['bootstrap_values']
+        assert len(values) == len(payload['leaves']) - 1 == len(payload['icoord'])
+        assert all(0 <= v['au'] <= 1 and 0 <= v['bp'] <= 1 for v in values)
