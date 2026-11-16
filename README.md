@@ -15,8 +15,8 @@ Anaconda first, and results are a link rather than a folder.
 line endings, and
 `scripts/vendor_core.py verify` (run in CI and at image build) fails if a
 single one is edited. The web layer builds the pipeline's parameters, runs
-it, and turns its output files into JSON for the browser — it never
-reimplements the science.
+it, and turns its output files into JSON for the browser it never
+reimplements the core algorithms.
 
 - **App:** <https://app.mpactms.org>
 - **User documentation:** <https://docs.mpactms.org>, built from `docs/` and
