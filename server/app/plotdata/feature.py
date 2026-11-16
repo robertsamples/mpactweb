@@ -596,19 +596,20 @@ def matches_for_mass(atlas, mass, ppm_threshold):
     """Protonated/sodiated adduct matches for one mass.
 
     Same two-adduct ppm test and ppm sort as ``main.runsearch`` and
-    ``dbsearch.search_npatlas``.
+    ``dbsearch.search_npatlas``. ``adduct`` says which of the two a match is.
     """
     hits = []
-    for column in ('compound_m_plus_h', 'compound_m_plus_na'):
+    for column, adduct in (('compound_m_plus_h', '[M+H]+'), ('compound_m_plus_na', '[M+Na]+')):
         values = atlas[column].to_numpy(dtype=float)
         with np.errstate(divide='ignore', invalid='ignore'):
             ppm = np.abs(1e6 * (values - float(mass)) / values)
         selected = atlas[ppm < float(ppm_threshold)].copy()
         selected['ppm'] = ppm[ppm < float(ppm_threshold)]
+        selected['adduct'] = adduct
         hits.append(selected)
     combined = pd.concat(hits).sort_values(by=['ppm'])
     return [
-        {'compound_id': clean(index),
+        {'compound_id': clean(index), 'adduct': row['adduct'],
          **{key: clean(row.get(key)) for key, _ in ATLAS_FIELDS}}
         for index, row in combined.iterrows()
     ]

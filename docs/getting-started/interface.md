@@ -41,17 +41,21 @@ can be edited in a vector program.
 
 ## The details panel
 
-The panel has four collapsible sections. Close the ones you are not reading to
+The panel has five collapsible sections. Close the ones you are not reading to
 make room for the others.
 
 - **Details:** m/z, retention time, mass defect, maximum abundance, fold change,
   p and q values, median CV, database hit count and the groups the feature was
   detected in.
+- **Analogues:** search for features one or two small formula steps away (CH₂,
+  H₂, O, NH). See [Mass Defect](../results/mass-defect.md#searching-for-analogues).
 - **Abundance:** average abundance per biological group with its propagated
   uncertainty (left), and the individual sample values (right).
 - **MS2 spectrum:** the feature's fragment spectrum, if you supplied a fragment
   database. After an MS/MS library search it is drawn as a mirror plot against
-  the best library match.
+  the best library match. When the feature has a database match, its peaks are
+  labelled with [fragment formulae](../results/feature-info.md#ms1-search-natural-products-atlas)
+  consistent with that match's formula.
 - **Database matches:** Natural Products Atlas and MS-DIAL library hits, with
   structures. Step through them with the arrows.
 

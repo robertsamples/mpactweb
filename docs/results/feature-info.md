@@ -58,6 +58,30 @@ fills the **MS1 hits** column, and the hits themselves, with structures and
 source organisms, appear under **Database matches** in the details panel.
 **Re-search MS1** runs the search again.
 
+When the feature has an MS2 spectrum, each hit also shows how well its formula
+accounts for the fragments. A fragment can only be made of atoms its parent
+has, so every fragment peak is checked for a formula that is part of the hit's
+ion formula, within 5 mDa or the ppm window, whichever is larger.
+
+- The percentage beside the ppm error is the share of fragment intensity the
+  hit's formula explains. Peaks at or above the precursor, and peaks under 5%
+  of the tallest fragment, are not counted.
+- **Score** combines the two: the mass error scaled against the ppm window,
+  multiplied by a fragment term that runs from 0.5 (nothing explained) to 1
+  (everything explained). **Sort** switches the list between mass error and
+  score.
+- The spectrum's peaks are labelled with the fragment formulae of the hit you
+  are looking at, and the note under the spectrum names that hit's formula.
+  Hover over a peak for its formula, the neutral loss and the mass error.
+
+Hits are listed by mass error by default. On two CHM350 class datasets, with
+MS-DIAL's reference-spectrum annotations taken as the right answer, the
+closest mass was the right formula 73% of the time and the top score 71%,
+so the score is no better at ranking than mass error alone. Formulae a few ppm
+apart mostly share the same small fragments. The fragment percentage is most
+useful for ruling a hit out: a formula that explains almost none of a clean
+spectrum is unlikely to be right.
+
 ### MS/MS library search
 
 Available when the run has a [fragment database](../setup/input-files.md#fragment-database).
@@ -68,11 +92,20 @@ drawn as a mirror plot against the best match.
 
 - **Cosine ≥** (default 0.5): the minimum spectral similarity for a match.
 - **Match precursor** (on by default): only library spectra whose precursor is
-  within the ppm window are considered. Turn it off for an analogue search,
+  within the ppm window, or 10 mDa if that is wider, are considered. The
+  window is wider than the MS1 search's because the library's precursors are
+  measured values too. Turn it off for an analogue search,
   which compares against the whole library with a modified cosine that also
   matches fragments shifted by the precursor mass difference. It finds related
   compounds with different masses, up to 200 Da apart.
 - **MS/MS required:** list only features that have an MS2 spectrum.
+
+The message after a search says how many spectra matched, how many features
+had no usable spectrum, and how many spectra had no library compound at their
+mass. Expect a short list from data-dependent acquisition: in two CHM350 class
+datasets about four in ten filtered features had an MS2 spectrum with two or
+more peaks, a fifth to a third of those had no library compound at their
+mass, and about one spectrum in ten found a match.
 
 ## Filtering by database match
 

@@ -15,7 +15,9 @@ from .. import config, plotdata, storage
 from .. import results as resultstore
 from ..core import csvcache, dbsearch, getfragdb
 from ..deps import get_results, get_run
+from ..plotdata import analogues as analoguedata
 from ..plotdata import feature as featuredata
+from ..plotdata import formula as formuladata
 from ..plotdata import hits as hitdata
 from ..plotdata import msms as msmsdata
 from ..results import Memo, RunResults
@@ -344,13 +346,32 @@ def _load_fragdb(path: Path):
                              lambda: getfragdb.importfrag(str(path)))
 
 
+def _feature_pattern(run, compound):
+    """The feature's MS/MS spectrum as stored, or None if the run has no
+    fragment file or the feature no spectrum in it."""
+    fragpath = _fragment_path(run)
+    if fragpath is None:
+        return None
+    entry = getattr(_load_fragdb(fragpath), 'ions', {}).get(str(compound))
+    if entry is None:
+        return None
+    pattern = np.asarray(entry.pattern, dtype=float)
+    return pattern if pattern.ndim == 2 and pattern.shape[0] else None
+
+
 @router.get('/feature/matches')
 def feature_matches(compound: str = CompoundParam,
                     filter: str = Query('', max_length=4000),
+                    run=Depends(get_run),
                     results: RunResults = Depends(get_results)):
     """NPAtlas mass matches for one feature, within the run's ppm window.
     ``filter`` is an optional JSON hit-filter spec; each match then carries
-    ``passes``."""
+    ``passes``.
+
+    When the feature has an MS/MS spectrum, each match also says how much
+    of it the match's formula can account for (``fragments``, ``score``),
+    and ``fragments`` on the response holds the fragment formulae per
+    candidate parent, for labelling the spectrum."""
     params = results.params()
     try:
         spec = hitdata.normalise(json.loads(filter)) if filter else None
@@ -371,9 +392,16 @@ def feature_matches(compound: str = CompoundParam,
         matches = hitdata.annotate_matches(params, matches, spec)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    pattern = _feature_pattern(run, compound)
+    fragments = {} if pattern is None else formuladata.score_matches(
+        matches, pattern, mass, params.get('ppmthresh', 10),
+        key_of=lambda match: ((match['compound_molecular_formula'], match['adduct'])
+                              if match.get('compound_molecular_formula') else None),
+        ppm_of=lambda match: match['ppm'])
     return {
         'feature': compound,
         'mz': mass,
+        'fragments': fragments,
         'ppm_threshold': params.get('ppmthresh', 10),
         'kingdom': params.get('kingdom', ''),
         'genus': params.get('genus', ''),
@@ -452,7 +480,8 @@ def run_msms_search(options: dict | None = None, run=Depends(get_run),
                                      bool(options.get('match_precursor', True)))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {'searched': record['searched'],
+    return {'searched': record['searched'], 'features': record['features'],
+            'with_candidates': record['with_candidates'],
             'matched': sum(1 for found in record['hits'].values() if found),
             'min_score': record['min_score'], 'match_precursor': record['match_precursor']}
 
@@ -460,20 +489,53 @@ def run_msms_search(options: dict | None = None, run=Depends(get_run),
 @router.get('/feature/msms')
 def feature_msms(compound: str = CompoundParam,
                  filter: str = Query('', max_length=4000),
+                 run=Depends(get_run),
                  results: RunResults = Depends(get_results)):
     """A feature's MS/MS library matches from the run's last MS/MS search.
     ``filter`` is an optional JSON hit-filter spec; each match then carries
-    ``passes``."""
+    ``passes``. Matches made on the precursor also carry the fragment
+    formulae their own formula gives the spectrum, as ``/feature/matches``
+    does; an analogue's formula is not the feature's, so those do not."""
     detail = _detail(results, compound)
+    mass = detail['fields'].get('m/z')
     try:
         spec = hitdata.normalise(json.loads(filter)) if filter else None
-        payload = msmsdata.matches(results, compound, detail['fields'].get('m/z'))
+        payload = msmsdata.matches(results, compound, mass)
         hitdata.annotate_library_matches(payload['matches'], spec)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    payload['fragments'] = {}
+    pattern = _feature_pattern(run, compound) if payload.get('match_precursor') else None
+    if pattern is not None and mass is not None:
+        payload['fragments'] = formuladata.score_matches(
+            payload['matches'], pattern, mass, results.params().get('ppmthresh', 10),
+            key_of=lambda match: ((match['formula'],
+                                   match['feature_ion'] or match['precursortype'])
+                                  if match.get('formula') else None),
+            ppm_of=lambda match: abs(1e6 * (match['delta_mz'] or 0.0) / float(mass)))
     return payload
+
+
+@router.post('/analogues')
+def feature_analogues(options: dict | None = None,
+                      results: RunResults = Depends(get_results)):
+    """Features that differ from ``compound`` by small formula steps (CH2,
+    H2, O, NH, and pairs of them). ``units``, ``combine`` and ``tolerance``
+    (Da) are optional."""
+    options = options or {}
+    compound = options.get('compound')
+    if not isinstance(compound, str) or not compound:
+        raise HTTPException(status_code=422, detail='compound is required')
+    try:
+        return analoguedata.find(results, compound, units=options.get('units'),
+                                 combine=bool(options.get('combine', True)),
+                                 tolerance=options.get('tolerance'))
+    except featuredata.UnknownFeature as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get('/structure')

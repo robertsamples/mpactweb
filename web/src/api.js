@@ -200,6 +200,7 @@ export const api = {
   msms: (id, compound, filter) =>
     request(`/api/runs/${id}/feature/msms?compound=${encodeURIComponent(compound)}`
             + (filter ? `&filter=${encodeURIComponent(JSON.stringify(filter))}` : '')),
+  analogues: (id, options) => json('POST', `/api/runs/${id}/analogues`, options),
   flags: (id) => request(`/api/runs/${id}/flags`),
   setFlags: (id, ids, colour) => json('POST', `/api/runs/${id}/flags`, { ids, colour }),
   downloads: (id) => request(`/api/runs/${id}/downloads`),

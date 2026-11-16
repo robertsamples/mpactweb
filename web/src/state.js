@@ -47,6 +47,7 @@ const initial = () => ({
   hitFilter: null,          // active Feature Info hit filter spec, or null
   busy: null,               // a running search, shown in the run chip
   msmsVersion: 0,           // bumped after each MS/MS search
+  analogues: { run: null, vectors: [] },   // analogue vectors of one run (analogues.js)
   plotFilter: { active: false, run: null, ids: null },   // Feature Info rows, for plots
   view: 'files',
 });

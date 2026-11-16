@@ -123,6 +123,18 @@ def test_precursor_search_finds_the_exact_match_once(tiny_library, tmp_path):
     assert msms.counts(results) == {'f_alpha': 1, 'f_beta_analogue': 0, 'f_noise': 0}
 
 
+def test_precursor_window_is_never_tighter_than_ten_millidaltons(tiny_library, tmp_path):
+    # 23 ppm from Alpha's recorded precursor: outside the run's 10 ppm, inside
+    # 10 mDa. Library precursors and features are both measured, and both drift.
+    drifted = {'f_drift': (300.1 + 0.007, FEATURES['f_alpha'][1]),
+               'f_far': (300.1 + 0.02, FEATURES['f_alpha'][1])}
+    results = FakeResults(tmp_path, drifted)
+    record = msms.search(results, fragdb(drifted), 0.7, match_precursor=True)
+    assert record['hits']['f_drift'] and record['hits']['f_far'] == []
+    # What the search had to work with, for the summary after it.
+    assert (record['features'], record['searched'], record['with_candidates']) == (2, 2, 1)
+
+
 def test_analogue_search_finds_a_shifted_relative(tiny_library, tmp_path):
     results = FakeResults(tmp_path, FEATURES)
     record = msms.search(results, fragdb(FEATURES), 0.7, match_precursor=False)

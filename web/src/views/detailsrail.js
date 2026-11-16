@@ -14,7 +14,9 @@ import { exportSelected } from '../export.js';
 import { flagControls, flags, toggleFlag } from '../flags.js';
 import { selection, store } from '../state.js';
 import { collapsible, makeRowResizer } from '../components.js';
-import { clear, el, num } from '../util.js';
+import { clear, el, num, toast } from '../util.js';
+import { UNIT, UNITS, analogueVectors, clearVectors, findAnalogues, removeVector,
+         stepsText } from '../analogues.js';
 import { FEATURE_FIELDS } from '../fields.js';
 import { abundance as drawAbundance, spectrum as drawSpectrum } from '../plots/review.js';
 import { plotlyReady } from '../plots/base.js';
@@ -28,10 +30,14 @@ const prefs = loadPrefs();
 
 function loadPrefs() {
   const fallback = { width: 320, collapsed: false,
-                     sections: { identity: true, abundance: true,
+                     sections: { identity: true, analogues: false, abundance: true,
                                  spectrum: false, matches: true },
                      // Panel heights, dragged by the boundary under each plot.
-                     heights: { abundance: 235, spectrum: 200 } };
+                     heights: { abundance: 235, spectrum: 200 },
+                     // The analogue search: which steps, pairs of them, and
+                     // the allowed error on the m/z difference (mDa).
+                     analogues: { units: UNITS.map((unit) => unit.key), combine: true,
+                                  tolerance: 2 } };
   try {
     const raw = localStorage.getItem(PREF_KEY);
     if (!raw) return fallback;
@@ -40,7 +46,8 @@ function loadPrefs() {
     // than trust whatever shape is in storage.
     return { ...fallback, ...saved,
              sections: { ...fallback.sections, ...(saved.sections || {}) },
-             heights: { ...fallback.heights, ...(saved.heights || {}) } };
+             heights: { ...fallback.heights, ...(saved.heights || {}) },
+             analogues: { ...fallback.analogues, ...(saved.analogues || {}) } };
   } catch { return fallback; }
 }
 
@@ -160,6 +167,8 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
 
   let refreshMatches = null;
   store.on(['hitFilter', 'msmsVersion'], () => { if (refreshMatches) refreshMatches(); });
+  let refreshAnalogues = null;
+  store.on('analogues', () => { if (refreshAnalogues) refreshAnalogues(); });
 
   // Re-rendering the same feature (every view switch asks) would reload
   // every section and make the rail flash.
@@ -261,8 +270,13 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       }
     };
 
-    // One MS/MS match request per feature, shared by the spectrum (for its
-    // mirror reference) and the match browser.
+    // One request per feature to each match source, shared by the spectrum
+    // (its mirror reference and its fragment formulae) and the match browser.
+    let atlasRequest = null;
+    const atlasMatches = () => {
+      if (!atlasRequest) atlasRequest = api.matches(id, compound, store.get('hitFilter'));
+      return atlasRequest;
+    };
     let msmsRequest = null;
     const msmsMatches = () => {
       if (!msmsRequest) {
@@ -274,8 +288,15 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     };
     let spectrumPayload = null;
     let reference = null;
+    // Fragment formulae are those of one candidate parent: the match being
+    // looked at in the browser, or until one is, the best match there is.
+    let formulas = null;
+    let formulaChosen = false;
+    const spectrumNote = el('div', { class: 'spectrum-note muted' });
     const drawSpec = () => {
-      if (spectrumPayload) drawSpectrum(spectrumBody, spectrumPayload, { compact: true, reference });
+      if (spectrumPayload) {
+        drawSpectrum(spectrumBody, spectrumPayload, { compact: true, reference, formulas });
+      }
     };
     const useReference = (match, payload) => {
       reference = match ? {
@@ -283,6 +304,30 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         shift: payload && payload.match_precursor === false ? match.delta_mz : null,
       } : null;
       drawSpec();
+    };
+    const useFormulas = (payload, match, chosen = true) => {
+      const entry = match && match.fragment_key && payload && payload.fragments
+        ? payload.fragments[match.fragment_key] : null;
+      if (chosen) formulaChosen = true;
+      formulas = entry ? new Map(entry.peaks.map((peak) => [peak.index, peak])) : null;
+      spectrumNote.textContent = entry
+        ? `Fragment formulae as ${entry.formula} ${entry.adduct}` + fragmentSummary(entry, ': ')
+        : '';
+      drawSpec();
+    };
+    /** Until a match is picked in the browser: the MS/MS library match the
+     *  mirror shows if it has a formula, otherwise the closest mass match
+     *  that does. */
+    const defaultFormulas = (msms) => {
+      if (formulaChosen) return;
+      const matches = (msms && msms.matches) || [];
+      const mirrored = matches.find((match) => match.passes) || matches[0];
+      if (mirrored && mirrored.fragment_key) { useFormulas(msms, mirrored, false); return; }
+      atlasMatches().then((atlas) => {
+        if (mine !== token || formulaChosen) return;
+        const first = atlas.matches.find((match) => match.fragment_key);
+        if (first) useFormulas(atlas, first, false);
+      }).catch(() => { /* no mass matches: the peaks keep their m/z labels */ });
     };
 
     const loadSpectrum = async () => {
@@ -299,6 +344,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         } else {
           drawSpec();
         }
+        if (payload.found) defaultFormulas(msms);
       } catch (error) {
         loaded.delete('spectrum');
         if (mine !== token) return;
@@ -311,21 +357,27 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       loaded.add('matches');
       const health = store.get('health') || {};
       const [atlas, msms] = await Promise.allSettled([
-        api.matches(id, compound, store.get('hitFilter')),
+        atlasMatches(),
         health.msms ? msmsMatches() : Promise.resolve(null),
       ]);
       if (mine !== token) return;
-      const sources = [atlasSource(atlas)];
+      const sources = [atlasSource(atlas, (match) => useFormulas(atlas.value, match))];
       if (msms.status === 'fulfilled' && msms.value && msms.value.searched) {
-        sources.push(msmsSource(msms.value, (match) => useReference(match, msms.value)));
+        sources.push(msmsSource(msms.value, (match) => {
+          useReference(match, msms.value);
+          useFormulas(msms.value, match);
+        }));
       }
       matchesSection.setBody(matchesPanel(sources, id));
     };
 
     refreshMatches = () => {
       if (mine !== token) return;
+      atlasRequest = null;
       msmsRequest = null;
       reference = null;
+      formulaChosen = false;
+      useFormulas(null, null, false);
       loaded.delete('matches');
       if (matchesSection.isOpen()) loadMatches();
       if (spectrumPayload) {
@@ -333,17 +385,26 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
           if (mine !== token) return;
           const matches = (msms && msms.matches) || [];
           useReference(matches.find((match) => match.passes) || matches[0], msms);
+          if (spectrumPayload.found) defaultFormulas(msms);
         });
       }
     };
 
+    const analogueBody = el('div', { class: 'analogues' });
+    refreshAnalogues = () => {
+      if (mine === token) analogueBody.replaceChildren(...analoguesPanel(compound));
+    };
+    refreshAnalogues();
+
     const identitySection = section('identity', 'Details', null, identityBody, loadIdentity);
+    const analogueSection = section('analogues', 'Analogues', 'by formula step', analogueBody);
     const abundanceSection = section('abundance', 'Abundance', 'by group', abundance.node,
                                      loadAbundance);
-    const spectrumSection = section('spectrum', 'MS2 spectrum', null, spectrum.node, loadSpectrum);
+    const spectrumSection = section('spectrum', 'MS2 spectrum', null,
+                                    el('div', {}, [spectrum.node, spectrumNote]), loadSpectrum);
     const matchesSection = section('matches', 'Database matches', null, matchesBody, loadMatches);
 
-    const children = [heading, identitySection, abundanceSection,
+    const children = [heading, identitySection, analogueSection, abundanceSection,
                       spectrumSection, matchesSection];
     if (onOpenFeatureInfo) {
       children.push(actions = el('div', {
@@ -438,23 +499,153 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     return { node, plot };
   }
 
-  function atlasSource(result) {
+  /** The Analogues section for the focused feature: what to search for, the
+   *  search, and every vector found so far (each removable). */
+  function analoguesPanel(compound) {
+    const options = prefs.analogues;
+    const chips = el('div', { class: 'unit-chips' }, UNITS.map((unit) => el('button', {
+      class: `unit-chip ${options.units.includes(unit.key) ? 'on' : ''}`.trim(), type: 'button',
+      text: unit.text, title: `Search for features one ${unit.text} away`,
+      on: { click: (event) => {
+        const on = !options.units.includes(unit.key);
+        options.units = UNITS.map((item) => item.key)
+          .filter((key) => (key === unit.key ? on : options.units.includes(key)));
+        event.currentTarget.classList.toggle('on', on);
+        savePrefs();
+      } },
+    })));
+    const pairs = el('label', {
+      class: 'check', title: 'Also two steps together, such as +O −H₂ (an alcohol to an acid)',
+    }, [
+      el('input', { type: 'checkbox', checked: options.combine,
+                    on: { change: (event) => { options.combine = event.target.checked; savePrefs(); } } }),
+      el('span', { text: 'Pairs' }),
+    ]);
+    const tolerance = el('label', { title: 'Allowed error on the m/z difference' }, [
+      el('span', { text: '±' }),
+      el('input', {
+        type: 'number', class: 'analogue-tolerance', min: 0.1, max: 20, step: 0.5,
+        value: options.tolerance,
+        on: { change: (event) => {
+          const value = parseFloat(event.target.value);
+          if (Number.isNaN(value) || value <= 0 || value > 20) {
+            event.target.value = options.tolerance;
+            return;
+          }
+          options.tolerance = value;
+          savePrefs();
+        } },
+      }),
+      el('span', { text: 'mDa' }),
+    ]);
+
+    const search = el('button', {
+      class: 'btn small primary', type: 'button', text: 'Search analogues',
+      title: 'Select the features one or two of these steps from this one, and draw the '
+             + 'vectors to them on the Mass Defect plot',
+      on: { click: async () => {
+        if (!options.units.length) { toast('Choose at least one step to search for.', 'error'); return; }
+        search.disabled = true;
+        try {
+          const found = await findAnalogues(compound, {
+            units: options.units, combine: options.combine, tolerance: options.tolerance / 1000,
+          });
+          toast(found ? `${found} analogue${found === 1 ? '' : 's'} of ${compound} selected`
+                      : `No analogues of ${compound} within ±${options.tolerance} mDa`,
+                found ? 'ok' : 'info');
+        } catch (error) {
+          toast(error.message, 'error');
+        } finally {
+          search.disabled = false;
+        }
+      } },
+    });
+
+    const vectors = analogueVectors();
+    const nodes = [el('div', { class: 'analogue-controls' }, [chips, pairs, tolerance]),
+                   el('div', { class: 'analogue-actions' }, [
+                     search, el('span', { class: 'spacer' }),
+                     vectors.length ? el('button', {
+                       class: 'btn small', type: 'button', text: 'Clear vectors',
+                       title: 'Remove every vector from the plot (the selection stays)',
+                       on: { click: () => clearVectors() },
+                     }) : null,
+                   ])];
+    if (!vectors.length) return nodes;
+
+    // Grouped by where each vector starts, in the order the starts appeared.
+    const groups = new Map();
+    for (const vector of vectors) {
+      if (!groups.has(vector.from)) groups.set(vector.from, []);
+      groups.get(vector.from).push(vector);
+    }
+    const focus = (feature) => (selection.asSet().has(feature) ? selection.focus(feature)
+                                                               : selection.add([feature], feature));
+    const list = el('div', { class: 'analogue-list' });
+    for (const [from, members] of groups) {
+      list.append(el('button', {
+        class: `analogue-from ${from === compound ? 'active' : ''}`.trim(), type: 'button',
+        text: `from ${from}`, title: 'Show this feature', on: { click: () => focus(from) },
+      }));
+      for (const vector of members) {
+        const error = 1000 * vector.error;
+        list.append(el('div', { class: `analogue-row ${vector.to === compound ? 'active' : ''}`.trim() }, [
+          el('span', { class: 'analogue-steps', title: stepsText(vector.steps) },
+             vector.steps.map((step) => el('span', { class: 'analogue-step' }, [
+               el('span', { class: 'vector-swatch',
+                            style: { background: UNIT.get(step.unit).colour } }),
+               `${step.sign > 0 ? '+' : '−'}${UNIT.get(step.unit).text}`,
+             ]))),
+          el('button', { class: 'analogue-name', type: 'button', text: vector.to,
+                         title: 'Show this feature', on: { click: () => focus(vector.to) } }),
+          el('span', { class: 'analogue-error muted',
+                       title: 'Observed m/z difference minus the expected one',
+                       text: `${error >= 0 ? '+' : '−'}${num(Math.abs(error), 2)}` }),
+          el('button', { class: 'analogue-remove', type: 'button', text: '×',
+                         title: 'Remove this vector, and deselect the feature',
+                         on: { click: () => removeVector(vector.key) } }),
+        ]));
+      }
+    }
+    nodes.push(list);
+    return nodes;
+  }
+
+  /** ": 5 of 7 peaks, 86% of intensity" for a candidate's fragment score. */
+  function fragmentSummary(fragments, lead = '') {
+    if (!fragments || !fragments.total) return '';
+    return `${lead}${fragments.matched} of ${fragments.total} peaks, `
+           + `${Math.round(100 * (fragments.explained || 0))}% of intensity`;
+  }
+
+  function atlasSource(result, onShow) {
     if (result.status !== 'fulfilled') {
       return { key: 'npatlas', label: 'NPAtlas', items: [], empty: result.reason.message };
     }
     const payload = result.value;
     const filtered = payload.matches.some((match) => match.passes !== undefined);
+    const scored = payload.matches.some((match) => typeof match.score === 'number');
+    // Mass error first, as the search returns them, or the composite of
+    // mass error and fragments explained (unscored matches last).
+    const byScore = scored ? [...payload.matches].sort((a, b) =>
+      (b.score ?? -1) - (a.score ?? -1) || a.ppm - b.ppm) : null;
     return {
-      key: 'npatlas', label: 'NPAtlas', items: payload.matches,
+      key: 'npatlas', label: 'NPAtlas', items: payload.matches, onShow,
+      sorts: scored ? [['ppm', 'ppm'], ['score', 'score']] : null,
+      order: (sort) => (sort === 'score' && byScore ? byScore : payload.matches),
       empty: `No match within ${payload.ppm_threshold} ppm of m/z ${num(payload.mz, 4)}.`,
-      start: filtered ? Math.max(0, payload.matches.findIndex((match) => match.passes)) : 0,
+      first: (items) => (filtered ? Math.max(0, items.findIndex((match) => match.passes)) : 0),
       dim: (match) => filtered && !match.passes,
       name: (match) => match.compound_name || '(unnamed)',
-      right: (match) => `${num(match.ppm, 2)} ppm`,
+      right: (match) => `${num(match.ppm, 2)} ppm`
+        + (match.fragments && match.fragments.total
+          ? ` · ${Math.round(100 * (match.fragments.explained || 0))}%` : ''),
       smiles: (match) => match.compound_smiles,
       caption: (match) => [
-        [match.compound_molecular_formula, `${num(match.compound_accurate_mass, 4)} Da`,
-         `${num(match.ppm, 2)} ppm`],
+        [match.compound_molecular_formula, match.adduct,
+         `${num(match.compound_accurate_mass, 4)} Da`, `${num(match.ppm, 2)} ppm`],
+        [fragmentSummary(match.fragments, 'Fragments: '),
+         typeof match.score === 'number' ? `score ${num(match.score, 2)}` : ''],
         [`${match.genus || ''} ${match.origin_species || ''}`.trim(),
          match.source_database && match.source_database !== 'NPAtlas' ? match.source_database : ''],
       ],
@@ -469,7 +660,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       key: 'msms', label: 'MS-DIAL', items: payload.matches, onShow,
       empty: payload.has_spectrum ? `No match with cosine ≥ ${payload.min_score}.`
                                   : 'No MS/MS spectrum searched.',
-      start: filtered ? Math.max(0, payload.matches.findIndex((match) => match.passes)) : 0,
+      first: (items) => (filtered ? Math.max(0, items.findIndex((match) => match.passes)) : 0),
       dim: (match) => filtered && !match.passes,
       name: (match) => match.name || '(unnamed)',
       right: (match) => `cos ${num(match.score, 3)}`,
@@ -479,6 +670,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         [`cosine ${num(match.score, 3)}`, `${match.matched} peaks`,
          match.delta_mz === null ? '' : `Δm/z ${num(match.delta_mz, 4)}`,
          match.feature_ion ? `as ${match.feature_ion}` : ''],
+        [fragmentSummary(match.fragments, 'Fragments: ')],
         [match.ontology],
       ],
       tags: (match) => [...(match.warheads || []), match.siderophore ? 'Siderophore' : '',
@@ -502,8 +694,20 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
     const next = el('button', { class: 'btn small', type: 'button', text: '\u203a',
                                 title: 'Next match', on: { click: () => show(index + 1) } });
     let source = sources.find((entry) => entry.key === preferredSource) || sources[0];
+    let items = [];
     let index = 0;
     let rows = [];
+    // Shown for a source whose matches can be put in more than one order.
+    const sorter = el('button', {
+      class: 'btn small sort-switch hidden', type: 'button',
+      title: 'Order by mass error, or by the score that combines mass error with the '
+             + 'fragments each formula explains',
+      on: { click: () => {
+        const keys = source.sorts.map(([key]) => key);
+        preferredSort = keys[(keys.indexOf(preferredSort) + 1) % keys.length];
+        use(source);
+      } },
+    });
 
     const toggle = sources.length > 1 ? el('div', { class: 'source-toggle' }, sources.map((entry) =>
       el('button', {
@@ -518,7 +722,12 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
           button.classList.toggle('primary', button.dataset.key === entry.key);
         }
       }
-      rows = entry.items.map((match, i) => el('button', {
+      const sort = entry.sorts && (entry.sorts.find(([key]) => key === preferredSort)
+                                   || entry.sorts[0]);
+      sorter.classList.toggle('hidden', !sort);
+      if (sort) sorter.textContent = `Sort: ${sort[1]}`;
+      items = entry.order ? entry.order(sort ? sort[0] : null) : entry.items;
+      rows = items.map((match, i) => el('button', {
         class: `match-row ${entry.dim(match) ? 'filtered-out' : ''}`, type: 'button',
         on: { click: () => show(i) },
       }, [
@@ -526,7 +735,7 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         el('span', { class: 'match-ppm', text: entry.right(match) }),
       ]));
       clear(list).append(...rows);
-      const empty = !entry.items.length;
+      const empty = !items.length;
       prev.disabled = empty;
       next.disabled = empty;
       if (empty) {
@@ -535,11 +744,10 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
         return;
       }
       clear(body).append(structure, caption, list);
-      show(entry.start || 0);
+      show(entry.first ? entry.first(items) : 0);
     }
 
     function show(target) {
-      const items = source.items;
       if (!items.length) return;
       index = Math.max(0, Math.min(items.length - 1, target));
       const match = items[index];
@@ -580,11 +788,11 @@ export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {
       const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10 }[event.key];
       if (step !== undefined) { event.preventDefault(); show(index + step); return; }
       if (event.key === 'Home') { event.preventDefault(); show(0); }
-      if (event.key === 'End') { event.preventDefault(); show(source.items.length - 1); }
+      if (event.key === 'End') { event.preventDefault(); show(items.length - 1); }
     });
 
     const nav = el('div', { class: `match-nav ${toggle ? 'with-toggle' : ''}` },
-                   [toggle, el('div', { class: 'match-steps' }, [prev, position, next])]);
+                   [toggle, el('div', { class: 'match-steps' }, [sorter, prev, position, next])]);
     const panel = el('div', { class: 'matches-panel' }, [nav, body]);
     use(source);
     return panel;
@@ -647,6 +855,7 @@ function imagesLoaded(root, timeout) {
  * wherever you are. */
 let instance = null;
 let preferredSource = 'npatlas';
+let preferredSort = 'ppm';
 
 export function detailsRail(options) {
   if (!instance) instance = createDetailsRail(options);

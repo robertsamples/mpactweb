@@ -1103,3 +1103,54 @@ table.features tbody tr.empty-row:hover { background: none; }
 }
 .admin-view .allow-entry button:hover { color: var(--text); }
 .admin-view form input[type=text] { width: 300px; }
+
+/* Analogues (details rail): which formula steps to search for, the search,
+   and the vectors found so far. */
+.analogues { display: flex; flex-direction: column; gap: 7px; font-size: 12px; }
+.analogue-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.analogue-controls label { display: flex; align-items: center; gap: 4px; padding: 0; color: var(--muted); }
+.analogue-controls .analogue-tolerance { width: 52px; padding: 2px 4px; font-size: 12px; }
+.unit-chips { display: flex; }
+.unit-chip {
+  background: #1c1c1c; color: var(--muted); border: 1px solid var(--border);
+  border-left-width: 0; padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.unit-chip:first-child { border-left-width: 1px; border-radius: var(--radius) 0 0 var(--radius); }
+.unit-chip:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.unit-chip:hover { color: #fff; }
+.unit-chip.on { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+.unit-chip.on + .unit-chip { border-left-width: 0; }
+.analogue-actions { display: flex; align-items: center; gap: 6px; }
+.analogue-actions .spacer { flex: 1; }
+.analogue-list {
+  max-height: 210px; overflow-y: auto; background: #1c1c1c;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.analogue-list button {
+  background: none; border: none; color: var(--text); font: inherit; font-size: 12px;
+  cursor: pointer; padding: 3px 7px;
+}
+.analogue-list button:hover { color: #fff; background: var(--panel); }
+.analogue-from {
+  display: block; width: 100%; text-align: left; color: var(--muted) !important;
+  background: var(--panel-2) !important; border-bottom: 1px solid #262626 !important;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.analogue-from.active { color: var(--accent) !important; }
+.analogue-row { display: flex; align-items: center; border-bottom: 1px solid #262626; }
+.analogue-row:last-child { border-bottom: none; }
+.analogue-row.active { background: #2b3a38; }
+.analogue-steps { flex: 0 0 auto; display: flex; gap: 6px; padding-left: 7px; white-space: nowrap; }
+.analogue-step { display: inline-flex; align-items: center; gap: 3px; }
+/* The vector's colour on the plot, which is drawn on a light ground; the
+   pale edge keeps the black CH2 swatch visible on this dark one. */
+.vector-swatch { width: 9px; height: 9px; border-radius: 50%; border: 1px solid #9a9a9a; }
+.analogue-name {
+  flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.analogue-error { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.analogue-remove { flex: 0 0 auto; color: var(--muted) !important; }
+
+/* Which parent formula the spectrum's fragment formulae assume. */
+.details-rail .spectrum-note { font-size: 11px; text-align: center; padding-top: 2px; min-height: 1.3em; }
+.match-nav .sort-switch { white-space: nowrap; }

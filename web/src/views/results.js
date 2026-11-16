@@ -15,6 +15,7 @@ import { registerView } from '../app.js';
 import { api } from '../api.js';
 import { selection, store } from '../state.js';
 import { flags, showFlagsToggle } from '../flags.js';
+import { analogueVectors } from '../analogues.js';
 import { clear, el, isAdditive, num, select, toast, debounce } from '../util.js';
 import { message, plotlyReady } from '../plots/base.js';
 import { fc3d, massdefect, mzrt, quality } from '../plots/scatter.js';
@@ -38,6 +39,8 @@ function plotContext() {
     selectedFeatures: selection.asSet(),
     // Flagged features to mark, compound -> colour (empty when switched off).
     flags: flags.shown(),
+    // Analogue vectors, drawn on the mass defect plot.
+    analogues: analogueVectors(),
     selectedSample: store.get('selectedSample'),
     // A plain click selects that feature alone; with Ctrl or Shift held it
     // is added to (or taken out of) the selection, as in the feature table.
@@ -338,7 +341,8 @@ function tabbedView({ id, label, group, requires, tabs }) {
   // A selection made anywhere updates the highlight here -- the desktop's
   // cross-plot highlight. Only the visible view redraws; the others pick the
   // selection up when they are next shown.
-  store.on(['selectedFeature', 'selectedFeatures', 'selectedSample', 'flags', 'showFlags'], () => {
+  store.on(['selectedFeature', 'selectedFeatures', 'selectedSample', 'flags', 'showFlags',
+            'analogues'], () => {
     if (!node.classList.contains('active')) return;
     panels.get(activeTab)?.redraw();
   });

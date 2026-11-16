@@ -369,11 +369,16 @@ export function abundance(surface, payload, options = {}) {
   }), compact ? { displayModeBar: false } : {});
 }
 
-/** m/z labels for the most intense peaks that fit: a label is kept only if
- *  its box overlaps no kept label and no taller peak beneath it. Works in
+/** A formula with its counts as subscripts, for a Plotly label. */
+const formulaHtml = (formula) => formula.replace(/\d+/g, (digits) => `<sub>${digits}</sub>`);
+
+/** Labels for the most intense peaks that fit: a label is kept only if its
+ *  box overlaps no kept label and no taller peak beneath it. Works in
  *  pixels, from the plot area's size and the visible axis ranges. `side` is
- *  1 for sticks drawn upwards and -1 for the mirrored reference below. */
-function peakLabels(surface, mzs, values, side, compact) {
+ *  1 for sticks drawn upwards and -1 for the mirrored reference below. A
+ *  peak is labelled with its m/z, or with its fragment formula when
+ *  `formulas` (peak index -> annotation) has one for it. */
+function peakLabels(surface, mzs, values, side, compact, formulas = null) {
   const layout = surface._fullLayout;
   if (!layout || !layout.xaxis || !layout.yaxis) return [];
   const width = layout.xaxis._length;
@@ -388,7 +393,7 @@ function peakLabels(surface, mzs, values, side, compact) {
   const boxHeight = compact ? 10 : 13;
   const limit = compact ? 6 : 12;
 
-  const peaks = mzs.map((mz, i) => ({ mz, y: values[i] }))
+  const peaks = mzs.map((mz, i) => ({ mz, y: values[i], formula: formulas && formulas.get(i) }))
     .filter((peak) => peak.mz >= x0 && peak.mz <= x1);
   const tallest = Math.max(...peaks.map((peak) => Math.abs(peak.y)), 0);
   // Distance of a stick's tip from the baseline, on its own side.
@@ -396,8 +401,13 @@ function peakLabels(surface, mzs, values, side, compact) {
   const placed = [];
   for (const peak of [...peaks].sort((a, b) => Math.abs(b.y) - Math.abs(a.y))) {
     if (placed.length >= limit || Math.abs(peak.y) < tallest * 0.03) break;
-    const text = peak.mz.toFixed(digits);
-    const half = (text.length * charWidth) / 2 + 2;
+    const formula = peak.formula ? peak.formula.formula : null;
+    const text = formula ? formulaHtml(formula) : peak.mz.toFixed(digits);
+    // Subscripts are set smaller than the letters they follow.
+    const length = formula
+      ? formula.replace(/\d/g, '').length + 0.7 * formula.replace(/\D/g, '').length
+      : text.length;
+    const half = (length * charWidth) / 2 + 2;
     // Slide a label at the frame's edge inward rather than drop it.
     const centre = Math.min(Math.max(px(peak.mz), half), width - half);
     const near = reach(peak.y) + 2;
@@ -454,7 +464,9 @@ function sticks(mzs, values, colours) {
 }
 
 /** MS2 spectrum; with `options.reference` ({mz, intensity, shift, name}) a
- *  mirror plot, the reference drawn downwards and both sides scaled to 100. */
+ *  mirror plot, the reference drawn downwards and both sides scaled to 100.
+ *  `options.formulas` (peak index -> {formula, loss, error, radical}) labels
+ *  the feature's peaks with fragment formulae instead of their m/z. */
 export function spectrum(surface, payload, options = {}) {
   if (!payload.found || !payload.mz.length) {
     message(surface, 'No MS2 spectrum for this feature in the loaded fragment database.');
@@ -485,16 +497,28 @@ export function spectrum(surface, payload, options = {}) {
   // Headroom beyond the base peak(s) for their labels.
   const yRange = reference ? [-128, 128] : [0, Math.max(...top) * 1.15];
 
-  const hover = (mzs, values, label) => ({
+  const formulas = options.formulas && options.formulas.size ? options.formulas : null;
+  // "[C9H12NO2]+ · −C3H5NO · +0.1 mDa" under a fragment's m/z.
+  const assigned = (index) => {
+    const found = formulas && formulas.get(index);
+    if (!found) return '';
+    const parts = [`[${formulaHtml(found.formula)}]<sup>${found.radical ? '•' : ''}+</sup>`];
+    if (found.loss) parts.push(`−${formulaHtml(found.loss)}`);
+    const error = 1000 * found.error;
+    parts.push(`${error >= 0 ? '+' : '−'}${num(Math.abs(error), 1)} mDa`);
+    return `<br>${parts.join(' · ')}`;
+  };
+
+  const hover = (mzs, values, label, note = () => '') => ({
     type: 'scatter', mode: 'markers', x: mzs, y: values,
     marker: { size: 5, color: 'rgba(0,0,0,0)' },
     text: mzs.map((mz, i) => `${label}m/z ${num(mz, 4)}<br>`
                              + (reference ? `${num(Math.abs(values[i]), 1)}%`
-                                          : `abundance ${num(values[i], 0)}`)),
+                                          : `abundance ${num(values[i], 0)}`) + note(i)),
     hovertemplate: '%{text}<extra></extra>', showlegend: false,
   });
 
-  const traces = [...sticks(payload.mz, top, colours), hover(payload.mz, top, '')];
+  const traces = [...sticks(payload.mz, top, colours), hover(payload.mz, top, '', assigned)];
   if (reference) {
     traces.push(...sticks(reference.mz, bottom, referenceColours),
                 hover(reference.mz, bottom, reference.name ? `${reference.name}<br>` : ''));
@@ -519,7 +543,7 @@ export function spectrum(surface, payload, options = {}) {
 
   const relabel = () => {
     if (!surface._fullLayout) return;
-    const annotations = peakLabels(surface, payload.mz, top, 1, compact);
+    const annotations = peakLabels(surface, payload.mz, top, 1, compact, formulas);
     if (reference) annotations.push(...peakLabels(surface, reference.mz, bottom, -1, compact));
     surface._labelling = true;
     Promise.resolve(Plotly.relayout(surface, { annotations }))

@@ -996,7 +996,15 @@ export function buildFeatureInfoView() {
     store.set({ busy: 'Searching MS/MS' });
     try {
       const result = await api.msmsSearch(runId(), msmsOptions);
-      toast(`MS/MS: ${result.matched} of ${result.searched} features matched`, 'ok');
+      // Say where the rest went: a short hit list mostly reflects how few
+      // features have a spectrum, and how few of those a library compound.
+      const without = result.features - result.searched;
+      toast(`MS/MS: ${result.matched} of ${result.searched} spectra matched`
+            + (without > 0 ? ` · ${without.toLocaleString()} of ${result.features.toLocaleString()} `
+                             + 'features have no usable spectrum' : '')
+            + (typeof result.with_candidates === 'number'
+              ? ` · ${(result.searched - result.with_candidates).toLocaleString()} have no library `
+                + 'compound at their mass' : ''), 'ok', 9000);
       store.set({ msmsVersion: (store.get('msmsVersion') || 0) + 1 });
       await load({ keepScroll: true });
     } catch (error) {

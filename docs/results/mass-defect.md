@@ -42,6 +42,37 @@ perbromocarbons and polycarbonic acids.
 - Singly charged ions made of C, H, N, O, P, S, Cl and I cannot fall between
   the perbromocarbon and hydrocarbon lines.
 
+## Searching for analogues
+
+Because a formula difference is a fixed vector on this plot, the features
+related to one you have found can be looked for directly. Select a feature,
+open **Analogues** in the details panel and press **Search analogues**. Every
+filtered feature that is one of the chosen steps away is added to the
+selection, and a vector to it is drawn on the plot, coloured by step.
+
+- **Steps:** CH₂ (a homologue), H₂ (a reduction or desaturation), O (a
+  hydroxylation or oxidation) and NH. Click a step to leave it out. Each is
+  searched in both directions.
+- **Pairs** (on by default): also two steps together, such as +O −H₂ for an
+  alcohol oxidised to an acid. If the compound in between was detected, the
+  second vector starts from it. If it was not, the two vectors are drawn end
+  to end through the point where it would be.
+- **± mDa** (default 2): the allowed error on the m/z *difference* between the
+  two features. Differences within one run are much more precise than the
+  masses themselves, so this can be far tighter than the ppm window.
+
+The vectors found are listed under the search, grouped by the feature they
+start from, with the error of each. **×** removes a vector and takes its
+feature out of the selection. **Clear vectors** removes them all and leaves the
+selection alone. Searching again from one of the analogues adds its vectors to
+the ones already there, so a family can be followed outwards a step at a time.
+With the family selected, [flag it](index.md#flags) to keep it.
+
+A match here means only that two masses differ by a formula step. In a crowded
+part of the plot some unrelated features will qualify, more so with **Pairs**
+on, so treat the result as candidates to check against retention time, MS2
+spectra and abundance patterns. Vectors are not saved with the run.
+
 ## Wrap-around
 
 Nominal mass is the floor of the m/z, so mass defect always lies between 0 and

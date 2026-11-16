@@ -7,6 +7,7 @@
  * feature in both apps. */
 
 import { rgba, num } from '../util.js';
+import { vectorAnnotations } from '../analogues.js';
 import { AXIS, axisTitle, baseLayout, drawSelectable, gridded, imageFormat,
          message, onSelect, originRange, paddedRange } from './base.js';
 
@@ -49,6 +50,11 @@ function render2d(surface, payload, context, options) {
     return;
   }
   const points = selectedPoints(payload, context.selectedFeatures);
+  // Analogue vectors (the mass defect plot): arrows between features, kept
+  // as layout annotations so that editing them never rebuilds the points.
+  const vectors = options.vectors || null;
+  const annotations = () => (vectors && vectors.length
+    ? vectorAnnotations(vectors, coordinates(payload)) : []);
 
   const fresh = !drawSelectable(surface, [payload, options.grid], () => {
     const allX = payload.series.flatMap((series) => series.x || []);
@@ -71,14 +77,35 @@ function render2d(surface, payload, context, options) {
                  range: range(options.yRange || payload.y_range, allY,
                               options.yFromZero !== false) },
         shapes: options.shapes || [],
+        annotations: annotations(),
       }),
       config: imageFormat(payload.plot),
     };
   }, points, { flags: flaggedPoints(payload, context.flags) });
 
+  if (!fresh && (surface._vectors || null) !== vectors) {
+    Plotly.relayout(surface, { annotations: annotations() });
+  }
+  surface._vectors = vectors;
+
   // The click handler closes over the payload, so it only needs rebinding
   // when the plot itself was rebuilt.
   if (fresh) onSelect(surface, (pt) => pt.customdata, context.onSelectFeature);
+}
+
+/** Compound -> [x, y] for every point in a payload, made once per payload. */
+function coordinates(payload) {
+  if (!payload._coordinates) {
+    const map = new Map();
+    for (const series of payload.series) {
+      const list = series.ids || [];
+      for (let i = 0; i < list.length; i += 1) {
+        if (series.x[i] !== null && series.y[i] !== null) map.set(list[i], [series.x[i], series.y[i]]);
+      }
+    }
+    payload._coordinates = map;
+  }
+  return payload._coordinates;
 }
 
 /** Coordinates and colour of every flagged compound in a payload. `flags`
@@ -136,6 +163,7 @@ export function massdefect(surface, payload, context) {
     yRange: [0, 1],
     grid: true,
     shapes,
+    vectors: context.analogues,
     fields: (series) => [
       ['m/z', series.x, 4],
       ['Mass defect', series.y, 4],

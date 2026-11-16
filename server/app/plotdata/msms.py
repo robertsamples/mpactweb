@@ -2,7 +2,8 @@
 MS-DIAL library (scripts/build_msms_library.py).
 
 With ``match_precursor`` a library spectrum is a candidate when its precursor
-is within the run's ppm window, and is scored by cosine. Without it every
+is within the run's ppm window or ``PRECURSOR_DA``, whichever is wider, and
+is scored by cosine. Without it every
 library spectrum is a candidate: a binned sparse dot product screens them and
 the best are rescored by modified cosine (fragments may also match shifted by
 the precursor difference), which is what finds analogues.
@@ -21,6 +22,14 @@ from .. import config, storage
 from ..results import Memo, file_key
 
 TOLERANCE = 0.02        # Da, fragment matching
+# Da, the least a precursor match allows. The run's ppm window is set for
+# matching a measured mass to a calculated one; here both sides are measured.
+# A fifth of the library's recorded precursors are themselves more than
+# 10 ppm from their formula, and so are three in ten of the CHM350 features,
+# so a 10 ppm window alone left real matches out of the candidates. 10 mDa is
+# MS-DIAL's own default, and the spectrum still has to match: precursors
+# shifted to masses no true match could have scored no hits at this width.
+PRECURSOR_DA = 0.01
 MIN_MATCHED = 2         # shared peaks for a match to count
 MIN_MATCHED_ANALOG = 4  # without a precursor match
 MAX_SHIFT = 200.0       # Da, analogue precursor difference
@@ -135,8 +144,9 @@ class Library:
 
     def precursor_candidates(self, mz, ppm):
         """Entries whose own ion, or whose neutral mass as [M+H]+ or
-        [M+Na]+, is within ``ppm`` of ``mz``."""
-        window = mz * ppm / 1e6
+        [M+Na]+, is within ``ppm`` (and no less than ``PRECURSOR_DA``) of
+        ``mz``."""
+        window = max(mz * ppm / 1e6, PRECURSOR_DA)
         lo = np.searchsorted(self.sorted_precursor, mz - window, side='left')
         hi = np.searchsorted(self.sorted_precursor, mz + window, side='right')
         found = [self.order[lo:hi]]
@@ -296,9 +306,15 @@ def search(results, fragdb, min_score=DEFAULT_MIN_SCORE, match_precursor=True):
                 found[key] = (int(index), round(value, 4), matched)
         hits[compound] = sorted(found.values(), key=lambda hit: -hit[1])[:MAX_RESULTS]
 
+    # Where the features went, so a short hit list can be read for what it
+    # is: most features have no spectrum to search, and many of the rest
+    # have no library compound at their mass.
     record = {'library': lib.signature, 'min_score': min_score,
               'match_precursor': bool(match_precursor), 'ppm': ppm,
-              'searched': len(queries), 'hits': hits}
+              'features': len(compounds), 'searched': len(queries),
+              'with_candidates': (sum(1 for found in candidates.values() if len(found))
+                                  if match_precursor else None),
+              'hits': hits}
     # Written beside the target and renamed over it, so a table refresh that
     # lands mid-search reads the previous results rather than half a file.
     storage.write_text_atomic(results.outputdir / RESULTS_FILE, json.dumps(record))
