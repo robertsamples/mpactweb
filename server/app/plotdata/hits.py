@@ -14,7 +14,7 @@ import threading
 import numpy as np
 import pandas as pd
 
-from .. import config
+from .. import config, ions
 from . import feature as featuredata
 
 TAXON_LEVELS = ('kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species')
@@ -262,12 +262,14 @@ class Reference(_Chemistry):
         atlas = featuredata.atlas_for(params).reset_index()
         self.size = len(atlas)
         self.compound_id = atlas['compound_id'].to_numpy()
-        self.mph = atlas['compound_m_plus_h'].to_numpy(dtype=float)
-        self.mna = atlas['compound_m_plus_na'].to_numpy(dtype=float)
-        self.order_h = np.argsort(self.mph, kind='stable')
-        self.sorted_h = self.mph[self.order_h]
-        self.order_na = np.argsort(self.mna, kind='stable')
-        self.sorted_na = self.mna[self.order_na]
+        # Each compound's m/z as every ion form this run searches, with a
+        # sorted order for windowed lookup.
+        self.ions = tuple(params.get('ions') or ions.LEGACY_SEARCH)
+        self.ion_mz = {label: featuredata.ion_masses(atlas, label) for label in self.ions}
+        self.ion_order = {label: np.argsort(values, kind='stable')
+                          for label, values in self.ion_mz.items()}
+        self.ion_sorted = {label: self.ion_mz[label][self.ion_order[label]]
+                           for label in self.ions}
         self.smiles = atlas['compound_smiles'].fillna('').astype(str).to_numpy()
 
         names = atlas['compound_name'].fillna('').astype(str)
@@ -375,6 +377,7 @@ def _siderite_keys():
 
 def reference(params):
     narrowing = {key: params.get(key, '') for key in ('kingdom', 'genus', 'taxon_level', 'taxon')}
+    narrowing['ions'] = tuple(ions.run_ions(params))
     key = (tuple(narrowing.values()), _mtime(config.NPATLAS_PATH),
            _mtime(config.NPATLAS_SUPPLEMENTAL_PATH),
            _mtime(config.TAXONOMY_PATH), _mtime(config.SIDERITE_KEYS_PATH))
@@ -416,13 +419,13 @@ def hit_index(results, ref):
             out.append(cand)
         return out
 
-    by_h = window(ref.sorted_h, ref.order_h, ref.mph)
-    by_na = window(ref.sorted_na, ref.order_na, ref.mna)
+    by_ion = [window(ref.ion_sorted[label], ref.ion_order[label], ref.ion_mz[label])
+              for label in ref.ions]
     index = {}
     for i, compound in enumerate(compounds):
         if np.isnan(masses[i]):
             continue
-        positions = np.union1d(by_h[i], by_na[i])
+        positions = np.unique(np.concatenate([found[i] for found in by_ion]))
         if positions.size:
             index[compound] = positions
     with _LOCK:
@@ -621,8 +624,9 @@ def top_matches(results, compounds, spec=None):
             continue
         mass = masses[where[compound]]
         with np.errstate(divide='ignore', invalid='ignore'):
-            ppm = np.fmin(np.abs(1e6 * (ref.mph[positions] - mass) / ref.mph[positions]),
-                          np.abs(1e6 * (ref.mna[positions] - mass) / ref.mna[positions]))
+            ppm = functools.reduce(np.fmin, [
+                np.abs(1e6 * (ref.ion_mz[label][positions] - mass) / ref.ion_mz[label][positions])
+                for label in ref.ions])
         if not np.isfinite(ppm).any():
             continue
         at = int(np.nanargmin(ppm))

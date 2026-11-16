@@ -53,8 +53,12 @@ Settings for matching features against the Natural Products Atlas (NPAtlas) in
 [Feature Info](../results/feature-info.md).
 
 - **ppm threshold** (default 10): the mass tolerance. A feature matches a
-  compound when its m/z is within this many ppm of the compound's protonated
-  (`[M+H]+`) or sodiated (`[M+Na]+`) ion.
+  compound when its m/z is within this many ppm of the compound as one of the
+  ticked ion forms.
+- **Ion forms**: which ions a feature is searched as. The list follows the
+  [ion mode](filtering.md#ion-mode). Positive mode starts with `[M+H]+` and
+  `[M+Na]+`; negative mode with `[M-H]-` and `[M+Cl]-`. Ticking more forms
+  finds more matches, including more by chance.
 - **Taxon**: limit matches to compounds reported from one taxon, at the level
   chosen (kingdom to species). Start typing to see suggestions. Leave it empty
   to search every compound.

@@ -1,8 +1,23 @@
 # Filtering Settings
 
-MPACT removes four kinds of unwanted features before computing statistics.
-Each filter can be turned off. The [Data Review](../results/data-review.md) tab
-reports how many features each one removed.
+MPACT removes unwanted features before computing statistics. Each filter can
+be turned off. The [Data Review](../results/data-review.md) tab reports how
+many features each one removed.
+
+Three of the filters are marked **beta**: the mass defect filter, the isotope
+filter and the adduct filter. They are newer than the published MPACT
+pipeline. The mass defect filter is on by default; the other two are off. With
+all three off, a run uses the published pipeline unchanged.
+
+## Ion mode
+
+Set **Ion mode** to Positive or Negative to match the data. It is used by the
+adduct filter and by the [database search](analysis-settings.md#database-search).
+If the selected peak table or fragment file states its polarity and it differs
+from the setting, a notice offers to switch.
+
+Negative mode is beta. The MS/MS library holds positive-mode spectra only, so
+the MS/MS library search is not available for a negative-mode run.
 
 <figure markdown="span">
   ![Filtering Settings with the default values](../images/filtering-settings.png)
@@ -27,6 +42,39 @@ artifacts beside an intense peak, and doubly charged dimers.
 
 The defaults are deliberately conservative, so that closely related but
 genuinely different compounds are not merged.
+
+### Beta isotope filter
+
+Ticking **Beta isotope filter** runs it in place of the mispicked peak
+correction. The correction's own settings are kept and come back when the box
+is unticked.
+
+The beta filter looks for the same three kinds of peak, but removes a feature
+only when it is weaker than the co-eluting feature it belongs to:
+
+- **Isotope**: the mass difference is a whole number of 13C spacings (1.00335)
+  within the mass tolerance, and the feature is weaker than its parent.
+- **Doubly charged**: the mass difference is close to a half-integer, the
+  feature is weaker than its parent, and the two correlate across samples.
+- **Ringing**: the feature is within the ringing window above its parent and
+  below the ringing intensity limit.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Merge Peaks | on | Add a removed peak's abundance to its parent feature |
+| tR Window | 0.005 | Maximum retention-time difference (min) from the parent; shared with the standard correction |
+| Isotope Mass Tolerance | 3 | ppm around each multiple of the 13C spacing |
+| Isotope Peaks per Feature | 3 | How many isotope peaks above the parent to look for |
+| Ringing Window | 800 | ppm above the parent in which a peak can be ringing |
+| Ringing Intensity Limit | 0.01 | A ringing peak is weaker than this fraction of the parent |
+| Isotope Intensity Limit | 0.7 | An isotope peak is no stronger than this fraction of the parent |
+| Doubly Charged Tolerance | 0.02 | Da around the half-integer mass difference |
+| Correlation Threshold | 0.75 | Pearson r across samples; shared with the adduct filter |
+| Correlation p Value | 0.05 | The correlation must be significant below this |
+
+The beta filter removes far fewer features than the standard correction. On
+MS-DIAL data it found about a tenth as many of MS-DIAL's own isotope
+annotations as the standard correction did, so treat it as experimental.
 
 ## Blank filtering and group parsing
 
@@ -84,7 +132,61 @@ the parent ion and the rest are removed.
 Keep the threshold high. A low value removes genuinely different compounds that
 happen to rise and fall together across samples.
 
+### Beta adduct filter
+
+Ticking **Beta adduct filter** runs it in place of in-source fragment
+deconvolution. The deconvolution settings are kept and come back when the box
+is unticked.
+
+The adduct filter groups the ion forms of one molecule, such as `[M+H]+`,
+`[M+Na]+` and `[M-H2O+H]+`. Two features are grouped when:
+
+- their m/z differ by one of the ticked ion forms, within the m/z tolerance;
+- they elute within the tR window of each other; and
+- their abundances correlate across samples (Pearson r above the threshold).
+
+The most abundant feature of each group is kept and the others are removed.
+Abundances are not summed. The removed features and the feature kept for each
+are listed in `adduct_attribution.csv` on the [Downloads](../results/downloads.md)
+tab, and each grouped feature's ion form is shown in its details.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Ion forms to group | see below | Which mass differences from the base ion count as the same molecule |
+| m/z Tolerance | 3 | ppm |
+| tR Window | 0.02 | Maximum retention-time difference (min) between forms |
+| Correlation Threshold | 0.75 | Pearson r across samples; shared with the isotope filter |
+
+The ion forms offered depend on the ion mode. Positive mode measures from
+`[M+H]+` and starts with `[M+Na]+`, `[M+K]+`, `[M+NH4]+`, `[M-H2O+H]+` and
+`[M-2H2O+H]+` ticked. Negative mode measures from `[M-H]-` and starts with
+`[M+Cl]-`, `[M+FA-H]-`, `[M+Hac-H]-`, `[M-H2O-H]-` and `[M-CO2-H]-` ticked.
+Each mode keeps its own ticks.
+
+The ion form labels describe mass differences. The feature labelled as the base
+ion is the one the others were measured from, which is not always the
+protonated or deprotonated molecule.
+
 <figure markdown="span">
   ![Features at one retention time are grouped by correlation, and the highest-mass feature is kept](../images/insource-diagram.png)
   <figcaption markdown="span">In-source fragment deconvolution. Features at the same retention time are grouped by correlation, and the highest-mass feature in each group (red star) is kept as the molecular ion.</figcaption>
 </figure>
+
+## Mass defect filtering (beta)
+
+Removes features whose m/z cannot belong to a singly charged molecule made of
+C, H, N, O, P and S. These are mostly multiply charged ions, salt clusters and
+noise. It is on by default.
+
+The filter allows a band of mass defects that widens with mass. Above about
+m/z 690 the band is wider than 1 Da, so every feature passes: the filter only
+removes features at lower masses. It runs before the other filters, and the
+features it removes take no part in them.
+
+Tested against the Natural Products Atlas, it rejects about 0.1% of known
+natural products as `[M+H]+`, most of them halogenated.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Mass Defect Filter | on | Remove features with an implausible mass defect |
+| Allow halogenated compounds | off | Widen the band for compounds with several Cl or Br. Turn this on for samples where halogenated compounds are expected |

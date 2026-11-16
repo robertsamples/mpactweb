@@ -27,6 +27,7 @@ const initial = () => ({
   groupError: null,
   groupUnresolved: null,    // {total, names}: peak-table injections with no group
   settings: null,           // filled from /api/runs/defaults
+  ions: null,               // {pos, neg}: the ion forms each mode offers
   groupsets: [],            // [{name, src, incl, excl, colour}]
   selectedGroupset: -1,
   run: null,                // {run_id, state, stage, ...}

@@ -507,7 +507,8 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
    Shown in place of the app, not over it: with no login every API call is
    refused, so there is nothing behind to see. */
 .login-screen {
-  height: 100vh; display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; display: flex; flex-direction: column; gap: 18px;
+  align-items: center; justify-content: center;
   background: var(--bg); padding: 20px;
 }
 .login-card {
@@ -1154,3 +1155,54 @@ table.features tbody tr.empty-row:hover { background: none; }
 /* Which parent formula the spectrum's fragment formulae assume. */
 .details-rail .spectrum-note { font-size: 11px; text-align: center; padding-top: 2px; min-height: 1.3em; }
 .match-nav .sort-switch { white-space: nowrap; }
+
+/* --- Beta filters and ion forms (Filtering / Analysis Settings) ---------- */
+.beta-tag {
+  display: inline-block; padding: 0 6px; border-radius: 8px;
+  font-size: 10px; line-height: 15px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--warn); border: 1px solid var(--warn);
+}
+/* The switch that hands a section to its beta filter, set off from the
+   section's own controls underneath. */
+.check.beta-switch {
+  margin: -2px 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.beta-line { margin: -4px 0 6px; }
+.panel.ion-mode .radio-row { padding-bottom: 2px; }
+.panel.ion-mode p { margin: 6px 0 0; max-width: 90ch; }
+.panel.ion-mode .notice { display: flex; align-items: center; gap: 10px; margin: 8px 0 0; }
+.ion-forms {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  column-gap: 14px; padding: 2px 0;
+}
+.check.ion-form { padding: 2px 0; }
+.ion-form .ion-label { color: var(--text); }
+.ion-form .ion-delta {
+  margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+
+/* --- citation and credits (sign-in screen) ------------------------------- */
+.login-cite {
+  width: 340px; max-width: 100%; text-align: center;
+  color: var(--muted); font-size: 11px; line-height: 1.5;
+}
+.login-cite p { margin: 0 0 6px; }
+.login-cite .cite-lead { color: var(--text); }
+.login-cite a, dialog.credits a { color: var(--accent); }
+.login-cite .link-button { font-size: 12px; }
+dialog.credits {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 22px 20px; width: min(560px, 92vw);
+  max-height: 88vh; overflow-y: auto; font-size: 13px; line-height: 1.5;
+}
+dialog.credits::backdrop { background: rgba(0, 0, 0, .55); }
+dialog.credits .credits-head { display: flex; align-items: center; margin-bottom: 4px; }
+dialog.credits h3 { margin: 0; flex: 1; font-family: var(--font-display); font-size: 15px; }
+dialog.credits h4 {
+  margin: 16px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border);
+  font-family: var(--font-display); font-size: 12px; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted);
+}
+dialog.credits p { margin: 0 0 8px; }
+dialog.credits .credit-person { margin-bottom: 1px; }
+dialog.credits .credits-foot { margin: 16px 0 0; }

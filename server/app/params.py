@@ -10,6 +10,7 @@ be assembled here exactly as the Qt version assembles it.
 import json
 from pathlib import Path
 
+from . import ions
 from .core import MSFaST, groupsets
 
 
@@ -90,13 +91,52 @@ def build_params(run, settings, all_groups, input_paths):
         params.genus = str(settings.genus or '')
         params.taxon_level, params.taxon = '', ''
 
+    # --- beta filters (the desktop reads these from adduct_config.txt) ----
+    # Each of the isotope and adduct filters takes over a step of the
+    # published pipeline while it is on: the isotope filter is the
+    # mispicked-peak correction run in its beta mode, and the adduct filter
+    # runs in place of in-source deconvolution. The settings of the step it
+    # stands in for are kept in the form, so turning it off restores them.
+    isotope_filter = bool(settings.relfil_beta)
+    adduct_filter = bool(settings.adductgrp)
+    relfil = bool(settings.relfil) or isotope_filter
+    decon = bool(settings.decon) and not adduct_filter
+
+    params.ionmode = settings.ionmode
+    params.mdfil = bool(settings.mdfil)
+    params.relfil_mode = 'beta' if isotope_filter else 'legacy'
+    params.adductgrp = adduct_filter
+    if params.mdfil:
+        params.md_halogen = bool(settings.md_halogen)
+    if isotope_filter:
+        params.iso_ppm = float(settings.iso_ppm)
+        params.iso_max_n = int(settings.iso_max_n)
+        params.iso_ratio_max = float(settings.iso_ratio_max)
+        params.ring_ppm = float(settings.ring_ppm)
+        params.ring_ratio_max = float(settings.ring_ratio_max)
+        params.dimer_tol = float(settings.dimer_tol)
+    if adduct_filter:
+        params.adduct_mode = settings.ionmode
+        params.adduct_ppm = float(settings.adduct_ppm)
+        params.adduct_rt_win = float(settings.adduct_rt_win)
+        # (name, m/z difference from the base ion) for the forms of this mode.
+        params.adduct_list = ions.grouping_list(settings.ionmode, settings.adducts)
+    if isotope_filter or adduct_filter:
+        params.corr_cut = float(settings.corr_cut)
+        params.corr_p = float(settings.corr_p)
+    # The whole selections, both modes: what a re-opened session restores.
+    params.adducts = list(settings.adducts)
+    params.search_adducts = list(settings.search_adducts)
+
     # --- graph-level filters, as a token list ----------------------------
+    # Features the mass defect and adduct filters remove need no token: the
+    # pipeline leaves them out of every feature set itself.
     params.graphfilters = []
     if settings.CVfil:
         params.graphfilters.append('cv')
-    if settings.relfil:
+    if relfil:
         params.graphfilters.append('rel')
-    if settings.decon:
+    if decon:
         params.graphfilters.append('insource')
         params.deconthresh = float(settings.deconthresh)
 
@@ -140,9 +180,9 @@ def build_params(run, settings, all_groups, input_paths):
     params.FDR = bool(settings.FDR)
 
     # --- filtering toggles and windows ------------------------------------
-    params.relfil = bool(settings.relfil)
+    params.relfil = relfil
     params.CVfil = bool(settings.CVfil)
-    params.decon = bool(settings.decon)
+    params.decon = decon
     params.merge = bool(settings.merge)
     params.RTwin = float(settings.RTwin)
     params.ringingwin = float(settings.ringingwin)

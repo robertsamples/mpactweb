@@ -11,11 +11,12 @@ the ones applied here, so a filter behaves the same in both apps.
 """
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from .. import config
+from .. import config, ions
 from ..core import treefilters
 from ..results import Memo, clean, file_key
 
@@ -592,15 +593,32 @@ def _narrow_by_taxon(atlas, level, taxon):
     return atlas[keep.to_numpy()]
 
 
-def matches_for_mass(atlas, mass, ppm_threshold):
-    """Protonated/sodiated adduct matches for one mass.
+# The two ion forms NPAtlas publishes a column for. They are read from the
+# table as written, so a positive-mode search with the default pair matches
+# exactly what the desktop's does; any other form is worked out from the
+# compound's accurate mass.
+ATLAS_ION_COLUMNS = {'[M+H]+': 'compound_m_plus_h', '[M+Na]+': 'compound_m_plus_na'}
 
-    Same two-adduct ppm test and ppm sort as ``main.runsearch`` and
-    ``dbsearch.search_npatlas``. ``adduct`` says which of the two a match is.
+
+def ion_masses(atlas, label):
+    """m/z of every atlas compound as the ion form ``label``."""
+    column = ATLAS_ION_COLUMNS.get(label)
+    if column is not None and column in atlas:
+        return atlas[column].to_numpy(dtype=float)
+    neutral = pd.to_numeric(atlas['compound_accurate_mass'], errors='coerce').to_numpy(dtype=float)
+    return neutral + ions.added(label)
+
+
+def matches_for_mass(atlas, mass, ppm_threshold, labels=ions.LEGACY_SEARCH):
+    """Database matches for one mass, taken as each ion form in ``labels``.
+
+    For the default pair, the same two-adduct ppm test and ppm sort as
+    ``main.runsearch`` and ``dbsearch.search_npatlas``. ``adduct`` says which
+    form a match is.
     """
     hits = []
-    for column, adduct in (('compound_m_plus_h', '[M+H]+'), ('compound_m_plus_na', '[M+Na]+')):
-        values = atlas[column].to_numpy(dtype=float)
+    for adduct in labels:
+        values = ion_masses(atlas, adduct)
         with np.errstate(divide='ignore', invalid='ignore'):
             ppm = np.abs(1e6 * (values - float(mass)) / values)
         selected = atlas[ppm < float(ppm_threshold)].copy()
@@ -613,6 +631,42 @@ def matches_for_mass(atlas, mass, ppm_threshold):
          **{key: clean(row.get(key)) for key, _ in ATLAS_FIELDS}}
         for index, row in combined.iterrows()
     ]
+
+
+def search_atlas(outputdir, stem, atlas, ppm_threshold, labels):
+    """``dbsearch.search_npatlas`` for any set of ion forms.
+
+    The vendored search is written around NPAtlas's two positive-ion columns.
+    This does the same thing -- count, for each feature that passed
+    filtering, the atlas compounds within ``ppm_threshold`` of its m/z, and
+    write the count to ``iondict.csv`` as ``hits`` (NaN for features not
+    searched) -- with the compound's m/z as each form in ``labels``. Used
+    only when a run's forms are not the vendored pair. Returns
+    ``(searched, matched)``.
+    """
+    outputdir = Path(outputdir)
+    iondict = pd.read_csv(outputdir / 'iondict.csv', sep=',', header=[0], index_col=[0])
+    iondict['hits'] = np.nan
+    msdata = pd.read_csv(outputdir / f'{stem}_filtered.csv', sep=',',
+                         header=[2], index_col=None).iloc[:, :3]
+    masses = msdata['m/z'].to_numpy(dtype=float)
+    compounds = msdata.iloc[:, 0].to_numpy()
+    counts = np.zeros(len(masses), dtype=float)
+    t = float(ppm_threshold) / 1e6
+    for label in labels:
+        values = ion_masses(atlas, label)
+        order = np.argsort(values, kind='stable')
+        ordered = values[order]
+        low = np.searchsorted(ordered, masses * (1 - 2 * t), side='left')
+        high = np.searchsorted(ordered, masses * (1 + 2 * t), side='right')
+        for i, mass in enumerate(masses):
+            candidates = ordered[low[i]:high[i]]
+            if candidates.size:
+                counts[i] += np.count_nonzero(
+                    np.abs(1e6 * (candidates - mass) / candidates) < ppm_threshold)
+    iondict.loc[compounds, 'hits'] = counts
+    iondict.to_csv(outputdir / 'iondict.csv', header=True, index=True)
+    return len(masses), int(np.count_nonzero(counts))
 
 
 def render_structure(smiles):

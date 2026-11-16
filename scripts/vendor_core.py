@@ -82,7 +82,13 @@ EXCLUDED_MODULES = {
 
 
 def sha256(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Hash of the file's content with line endings normalised to LF.
+
+    Git on Windows checks text files out with CRLF, so the same commit has
+    different bytes on a Windows desktop and in a Linux container. Hashing the
+    raw bytes made the manifest match only the machine that wrote it.
+    """
+    return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 
 def load_manifest():
@@ -133,7 +139,7 @@ def cmd_verify(args):
         if not path.exists():
             problems.append(f'{name}: missing')
         elif sha256(path) != expected:
-            problems.append(f'{name}: MODIFIED (vendored core must stay byte-identical)')
+            problems.append(f'{name}: MODIFIED (vendored core must stay identical to upstream)')
 
     extra = {p.name for p in VENDOR_DIR.glob('*.py')} - set(manifest['files'])
     for name in sorted(extra):

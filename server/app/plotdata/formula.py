@@ -26,12 +26,22 @@ ELEMENTS = {
     'Al': (26.98153863, 3),
 }
 
-# Ion type -> atoms added to the neutral molecule (the charge is +1).
+# Ion type -> atoms added to the neutral molecule. The charge is the sign the
+# label ends in, and always one: see ``charge_of``.
 ADDUCTS = {
     '[M+H]+': {'H': 1}, '[M+Na]+': {'Na': 1}, '[M+K]+': {'K': 1},
     '[M+NH4]+': {'N': 1, 'H': 4}, '[M]+': {},
     '[M-H2O+H]+': {'H': -1, 'O': -1}, '[M+H-H2O]+': {'H': -1, 'O': -1},
     '[M-2H2O+H]+': {'H': -3, 'O': -2},
+
+    '[M-H]-': {'H': -1}, '[M]-': {}, '[M+Cl]-': {'Cl': 1},
+    '[M+FA-H]-': {'C': 1, 'H': 1, 'O': 2}, '[M+Hac-H]-': {'C': 2, 'H': 3, 'O': 2},
+    '[M+Na-2H]-': {'Na': 1, 'H': -2}, '[M+K-2H]-': {'K': 1, 'H': -2},
+    '[M-H2O-H]-': {'H': -3, 'O': -1}, '[M-2H2O-H]-': {'H': -5, 'O': -2},
+    '[M-CO2-H]-': {'C': -1, 'H': -1, 'O': -2}, '[M-CO-H]-': {'C': -1, 'H': -1, 'O': -1},
+    '[M-SO3-H]-': {'H': -1, 'O': -3, 'S': -1}, '[M-H2SO4-H]-': {'H': -3, 'O': -4, 'S': -1},
+    '[M-Hex-H]-': {'C': -6, 'H': -11, 'O': -5}, '[M-GlcA-H]-': {'C': -6, 'H': -9, 'O': -6},
+    '[M-Taurine-H]-': {'C': -2, 'H': -8, 'N': -1, 'O': -3, 'S': -1},
 }
 
 _TOKEN = re.compile(r'([A-Z][a-z]?)(\d*)')
@@ -87,15 +97,21 @@ def text(counts):
     return ''.join(f'{e}{counts[e] if counts[e] > 1 else ""}' for e in order)
 
 
+def charge_of(adduct):
+    """+1 or -1: the sign an ion label such as ``[M+Cl]-`` ends in."""
+    return -1 if str(adduct or '').strip().endswith('-') else 1
+
+
 def ion(formula, adduct):
     """Atom counts of the singly charged ion ``adduct`` makes of ``formula``.
-    A formula written as a cation is its own ion whatever the adduct. None
-    if either is unknown or the adduct takes atoms the molecule lacks."""
+    A formula already written as an ion of that sign is its own ion whatever
+    the adduct. None if either is unknown, the formula is an ion of the other
+    sign, or the adduct takes atoms the molecule lacks."""
     parsed = parse(formula)
     if parsed is None:
         return None
     counts, charge = parsed
-    if charge < 0:
+    if charge and charge != charge_of(adduct):
         return None
     counts = dict(counts)
     if charge == 0:
@@ -109,8 +125,10 @@ def ion(formula, adduct):
     return {element: number for element, number in counts.items() if number}
 
 
-def ion_mz(counts):
-    return mass(counts) - ELECTRON
+def ion_mz(counts, charge=1):
+    """m/z of a singly charged ion: a cation is one electron short of its
+    atoms' mass, an anion one over."""
+    return mass(counts) - charge * ELECTRON
 
 
 class _Grid:
@@ -145,7 +163,7 @@ class _Grid:
         self.order, self.sorted_mass = order, self.mass[order]
 
 
-def annotate(ion_counts, mzs, tolerance):
+def annotate(ion_counts, mzs, tolerance, charge=1):
     """The best sub-formula of ``ion_counts`` for each m/z, or None for a
     peak none fits: ``{'formula', 'error', 'radical', 'counts'}``.
 
@@ -153,8 +171,8 @@ def annotate(ion_counts, mzs, tolerance):
     more of any atom than the parent and must be a possible ion: rings plus
     double bonds no lower than -0.5, and at least one hydrogen or halogen to
     five carbons (the usual lower bound for organic molecules). Even-electron
-    ions are preferred over radical cations unless the radical is markedly
-    closer in mass.
+    ions are preferred over radical ions unless the radical is markedly
+    closer in mass. ``charge`` is the sign of the ions (+1 or -1).
     """
     grid = _Grid(ion_counts)
     out = [None] * len(mzs)
@@ -162,7 +180,7 @@ def annotate(ion_counts, mzs, tolerance):
         return out
     for position, mz in enumerate(mzs):
         allowed = float(tolerance(mz))
-        target = float(mz) + ELECTRON
+        target = float(mz) + charge * ELECTRON
         # Combinations light enough to leave room for 0..H hydrogens.
         low = np.searchsorted(grid.sorted_mass,
                               target - grid.hydrogens * HYDROGEN - allowed, side='left')
@@ -211,7 +229,7 @@ def fragment_tolerance(ppm):
     return lambda mz: max(0.005, mz * ppm / 1e6)
 
 
-def explain(ion_counts, mzs, intensities, precursor_mz, tolerance):
+def explain(ion_counts, mzs, intensities, precursor_mz, tolerance, charge=1):
     """How much of a spectrum a parent ion formula accounts for.
 
     Returns ``{'explained', 'matched', 'total', 'peaks'}``: the share of the
@@ -225,8 +243,8 @@ def explain(ion_counts, mzs, intensities, precursor_mz, tolerance):
     """
     mzs = np.asarray(mzs, dtype=float)
     intensities = np.asarray(intensities, dtype=float)
-    peaks = annotate(ion_counts, mzs, tolerance)
-    parent = ion_mz(ion_counts)
+    peaks = annotate(ion_counts, mzs, tolerance, charge)
+    parent = ion_mz(ion_counts, charge)
     for position, mz in enumerate(mzs):
         if peaks[position] is not None:
             peaks[position]['loss'] = loss(ion_counts, peaks[position].pop('counts'))
@@ -292,12 +310,13 @@ def report(pattern, precursor_mz, ppm, candidates):
         counts = ion(formula, adduct)
         if counts is None:
             continue
+        charge = charge_of(adduct)
         # Not this feature's ion at all: a formula written as a cation that
         # the mass search matched as though a proton or sodium were added.
-        if abs(ion_mz(counts) - float(precursor_mz)) > max(MAX_PARENT_ERROR,
-                                                           3 * tolerance(precursor_mz)):
+        if abs(ion_mz(counts, charge) - float(precursor_mz)) > max(MAX_PARENT_ERROR,
+                                                                   3 * tolerance(precursor_mz)):
             continue
-        result = explain(counts, mzs[rows], intensities[rows], precursor_mz, tolerance)
+        result = explain(counts, mzs[rows], intensities[rows], precursor_mz, tolerance, charge)
         peaks = []
         for row, peak in zip(rows, result['peaks']):
             if peak is None:

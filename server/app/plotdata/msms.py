@@ -18,7 +18,7 @@ import threading
 import numpy as np
 import pandas as pd
 
-from .. import config, storage
+from .. import config, ions, storage
 from ..results import Memo, file_key
 
 TOLERANCE = 0.02        # Da, fragment matching
@@ -52,8 +52,23 @@ ADDUCTS = {
     '[M+3H]3+': (1, 3, 3 * PROTON), '[2M+H]+': (2, 1, PROTON), '[2M+Na]+': (2, 1, SODIUM),
     '[2M+NH4]+': (2, 1, 18.033823),
 }
-# What a feature's m/z is taken to be, besides the library entry's own ion.
+# What a feature's m/z is taken to be, besides the library entry's own ion:
+# the run's database-search forms. This pair is the default, kept with the
+# masses it has always had.
 FEATURE_IONS = (('[M+H]+', PROTON), ('[M+Na]+', SODIUM))
+# The library is built from positive-mode spectra only
+# (scripts/build_msms_library.py), so there is nothing to search a
+# negative-mode run against.
+NEGATIVE_MODE = ('The MS/MS library holds positive-mode spectra only, so a negative-mode '
+                 'run cannot be searched against it.')
+
+
+def feature_ions(params):
+    """``((label, mass added), ...)`` for a run's ion forms."""
+    labels = tuple(ions.run_ions(params))
+    if labels == ions.LEGACY_SEARCH:
+        return FEATURE_IONS
+    return tuple((label, ions.added(label)) for label in labels)
 RESULTS_FILE = 'msms_hits.json'
 
 _LOCK = threading.Lock()
@@ -142,29 +157,29 @@ class Library:
             self._neutral = (mass, order, mass[order])
         return self._neutral
 
-    def precursor_candidates(self, mz, ppm):
-        """Entries whose own ion, or whose neutral mass as [M+H]+ or
-        [M+Na]+, is within ``ppm`` (and no less than ``PRECURSOR_DA``) of
-        ``mz``."""
+    def precursor_candidates(self, mz, ppm, feature_ions=FEATURE_IONS):
+        """Entries whose own ion, or whose neutral mass as one of
+        ``feature_ions`` ([M+H]+ or [M+Na]+ by default), is within ``ppm``
+        (and no less than ``PRECURSOR_DA``) of ``mz``."""
         window = max(mz * ppm / 1e6, PRECURSOR_DA)
         lo = np.searchsorted(self.sorted_precursor, mz - window, side='left')
         hi = np.searchsorted(self.sorted_precursor, mz + window, side='right')
         found = [self.order[lo:hi]]
         _, order, sorted_mass = self.neutral
-        for _, added in FEATURE_IONS:
+        for _, added in feature_ions:
             target = mz - added
             lo = np.searchsorted(sorted_mass, target - window, side='left')
             hi = np.searchsorted(sorted_mass, target + window, side='right')
             found.append(order[lo:hi])
         return np.unique(np.concatenate(found))
 
-    def relation(self, index, mz):
+    def relation(self, index, mz, feature_ions=FEATURE_IONS):
         """(label, Δm/z) for how ``mz`` matches entry ``index``: its own ion
-        (label None) or the closest of [M+H]+ / [M+Na]+."""
+        (label None) or the closest of ``feature_ions``."""
         options = [(None, mz - float(self.precursor[index]))]
         neutral = self.neutral[0][index]
         if np.isfinite(neutral):
-            options += [(label, mz - added - float(neutral)) for label, added in FEATURE_IONS]
+            options += [(label, mz - added - float(neutral)) for label, added in feature_ions]
         return min(options, key=lambda option: abs(option[1]))
 
     def peaks(self, index):
@@ -246,10 +261,13 @@ def _screen(lib, queries, min_score):
 def search(results, fragdb, min_score=DEFAULT_MIN_SCORE, match_precursor=True):
     """Search every filtered feature that has a spectrum; write and return
     the results."""
-    lib = library()
     params = results.params()
+    if ions.run_mode(params) == 'neg':
+        raise ValueError(NEGATIVE_MODE)
+    lib = library()
     ppm = float(params.get('ppmthresh', 10))
     min_score = float(min_score)
+    taken_as = feature_ions(params)
 
     iondict = results.iondict()
     iondict = iondict.set_index(iondict['Compound'].astype(str))
@@ -257,11 +275,11 @@ def search(results, fragdb, min_score=DEFAULT_MIN_SCORE, match_precursor=True):
         compounds = list(results.filtered_ids())
     except Exception:  # noqa: BLE001
         compounds = list(iondict.index)
-    ions = getattr(fragdb, 'ions', {}) if fragdb else {}
+    spectra = getattr(fragdb, 'ions', {}) if fragdb else {}
 
     queries = []
     for compound in compounds:
-        entry = ions.get(compound)
+        entry = spectra.get(compound)
         if entry is None or compound not in iondict.index:
             continue
         mz, weight = clean_peaks(entry.pattern)
@@ -275,7 +293,7 @@ def search(results, fragdb, min_score=DEFAULT_MIN_SCORE, match_precursor=True):
 
     blocks = lib.meta['block'].to_numpy()
     if match_precursor:
-        candidates = {i: lib.precursor_candidates(precursor, ppm)
+        candidates = {i: lib.precursor_candidates(precursor, ppm, taken_as)
                       for i, (_, _, _, precursor) in enumerate(queries)}
     else:
         candidates = _screen(lib, [(c, m, w) for c, m, w, _ in queries], min_score)
@@ -360,6 +378,7 @@ def matches(results, compound, precursor):
         return {'searched': False, 'matches': []}
     lib = library()
     meta = lib.meta
+    taken_as = feature_ions(results.params())
     out = []
     for index, value, matched in record['hits'].get(str(compound), []):
         row = meta.iloc[index]
@@ -368,7 +387,7 @@ def matches(results, compound, precursor):
         if precursor is None:
             ion, delta = None, None
         elif record['match_precursor']:
-            ion, delta = lib.relation(index, float(precursor))
+            ion, delta = lib.relation(index, float(precursor), taken_as)
         else:
             ion, delta = None, float(precursor) - float(lib.precursor[index])
         relative = 100 * relative / relative.max() if relative.size else relative

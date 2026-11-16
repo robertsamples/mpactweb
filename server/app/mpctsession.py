@@ -23,7 +23,9 @@ import io
 import pickle
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from . import ions
 from .core import groupsets
+from .schemas import AnalysisSettings
 
 # Extensions offered in the file picker. The format is `.mpct`; `.mpact` is
 # accepted too because that is what people call it.
@@ -142,6 +144,21 @@ def _flag(params, attr, fallback=True):
     return fallback if value is None else bool(value)
 
 
+def _ionmode(params):
+    """The web's ``ionmode``, or the desktop config file's ``mode``."""
+    mode = getattr(params, 'ionmode', None) or getattr(params, 'adduct_mode', None) or 'pos'
+    return 'neg' if str(mode).strip().lower().startswith('neg') else 'pos'
+
+
+def _ion_forms(params, attr, table):
+    """A saved selection of ion forms, less any this version does not know;
+    the defaults when the session has none (every desktop session)."""
+    saved = getattr(params, attr, None)
+    if not isinstance(saved, (list, tuple)):
+        return ions.default_selection(table)
+    return [label for label in dict.fromkeys(saved) if ions.known(label)]
+
+
 def settings_from(params, warnings):
     """Map a pickled ``analysis_parameters`` onto ``AnalysisSettings`` fields.
 
@@ -182,6 +199,26 @@ def settings_from(params, warnings):
         'decon': 'insource' in filters or _flag(params, 'decon'),
         'deconthresh': _number(params, 'deconthresh', 0.95),
 
+        # Ion mode and the beta filters. A session saved before they existed
+        # carries none of them and gets the form's defaults (the mass defect
+        # filter on, the other two off); one that has them keeps what it says.
+        'ionmode': _ionmode(params),
+        'mdfil': _flag(params, 'mdfil', AnalysisSettings.model_fields['mdfil'].default),
+        'md_halogen': _flag(params, 'md_halogen', False),
+        'relfil_beta': str(getattr(params, 'relfil_mode', '') or '').lower() == 'beta',
+        'iso_ppm': _number(params, 'iso_ppm', 3.0),
+        'iso_max_n': int(_number(params, 'iso_max_n', 3)),
+        'iso_ratio_max': _number(params, 'iso_ratio_max', 0.7),
+        'ring_ppm': _number(params, 'ring_ppm', 800.0),
+        'ring_ratio_max': _number(params, 'ring_ratio_max', 0.01),
+        'dimer_tol': _number(params, 'dimer_tol', 0.02),
+        'adductgrp': _flag(params, 'adductgrp', False),
+        'adduct_ppm': _number(params, 'adduct_ppm', 3.0),
+        'adduct_rt_win': _number(params, 'adduct_rt_win', 0.02),
+        'adducts': _ion_forms(params, 'adducts', ions.GROUPING_DEFAULT),
+        'corr_cut': _number(params, 'corr_cut', 0.75),
+        'corr_p': _number(params, 'corr_p', 0.05),
+
         # Analysis Settings
         'FC': _flag(params, 'FC'),
         'Ttest': _flag(params, 'Ttest'),
@@ -202,9 +239,28 @@ def settings_from(params, warnings):
         'genus': str(getattr(params, 'genus', '') or ''),
         'taxon_level': str(getattr(params, 'taxon_level', '') or ''),
         'taxon': str(getattr(params, 'taxon', '') or ''),
+        'search_adducts': _ion_forms(params, 'search_adducts', ions.SEARCH_DEFAULT),
 
         'groupsets': groupsets_from(params, warnings),
     }
+
+    # The beta filters' numbers are only ever typed into a text file on the
+    # desktop, so one out of range is put back to its default rather than
+    # failing the import.
+    defaults = AnalysisSettings()
+    for key in ('iso_ppm', 'ring_ppm', 'dimer_tol', 'adduct_ppm', 'adduct_rt_win'):
+        if settings[key] <= 0:
+            warnings.append(f'{key} in the session file was {settings[key]:g}; '
+                            f'reset to {getattr(defaults, key):g}')
+            settings[key] = getattr(defaults, key)
+    for key in ('iso_ratio_max', 'ring_ratio_max', 'corr_cut', 'corr_p'):
+        if not 0 < settings[key] <= 1:
+            warnings.append(f'{key} in the session file was {settings[key]:g}; '
+                            f'reset to {getattr(defaults, key):g}')
+            settings[key] = getattr(defaults, key)
+    if not 1 <= settings['iso_max_n'] <= 5:
+        warnings.append(f"iso_max_n in the session file was {settings['iso_max_n']}; reset to 3")
+        settings['iso_max_n'] = 3
 
     # A threshold of zero would fail validation on the way back in; the
     # desktop simply shows whatever it loaded, so say what happened.

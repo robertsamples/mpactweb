@@ -11,7 +11,8 @@ interactive plots come out. The difference is that nobody has to install
 Anaconda first, and results are a link rather than a folder.
 
 **The analysis pipeline is the desktop app's, used unmodified.**
-`server/mpact_core/` is a byte-for-byte copy of MPACT's Qt-free modules, and
+`server/mpact_core/` is a copy of MPACT's Qt-free modules, identical apart from
+line endings, and
 `scripts/vendor_core.py verify` (run in CI and at image build) fails if a
 single one is edited. The web layer builds the pipeline's parameters, runs
 it, and turns its output files into JSON for the browser — it never
@@ -72,7 +73,11 @@ The workflow is the desktop's, tab for tab:
    sheets, say: each run uses only the rows its peak table needs, and repeated
    rows are merged rather than stopping the run.
 2. **Filtering Settings** — mispicked peaks, blank filtering, CV
-   (reproducibility) filtering, in-source fragment deconvolution.
+   (reproducibility) filtering, in-source fragment deconvolution, and the ion
+   mode. Three newer filters are marked beta: a mass defect filter (on by
+   default), an isotope filter that runs in place of mispicked-peak
+   correction, and an adduct filter that runs in place of in-source
+   deconvolution. With all three off, a run is the published pipeline.
 3. **Analysis Settings** — the two groups the statistics compare, the
    colour-coded Plot Feature Sets, and the database-search window. Fold
    change, the t-test and FDR correction have no toggles: they are hidden on

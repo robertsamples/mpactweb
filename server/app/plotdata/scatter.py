@@ -18,6 +18,7 @@ import numpy as np
 
 from .. import config
 from ..results import column
+from .quality import ADDUCT_COLOUR, MASS_DEFECT_COLOUR
 
 
 def _series(results, rows, entry, extra=None):
@@ -130,6 +131,13 @@ QUALITY_CLASSES = (
     ('#00aa00', 'In-source ions'),
     ('#000000', 'High Quality'),
 )
+# The beta filters' classes, drawn only for a run that used them. An adduct
+# is marked before the desktop's four, so any of those still wins; a mass
+# defect failure is marked last, since it left the data before the others ran.
+BETA_QUALITY_CLASSES = (
+    ('mdfil', MASS_DEFECT_COLOUR, 'Mass defect (beta)'),
+    ('adductgrp', ADDUCT_COLOUR, 'Adducts (beta)'),
+)
 
 
 def quality(results, options=None):
@@ -142,6 +150,8 @@ def quality(results, options=None):
     def mark(mask, colour):
         colours[np.asarray(mask, dtype=bool)] = colour
 
+    if params.get('adductgrp') and 'pass_adduct' in iondict:
+        mark(~iondict['pass_adduct'].fillna(True).astype(bool), ADDUCT_COLOUR)
     if params.get('decon') and 'pass_insource' in iondict:
         mark(~iondict['pass_insource'].fillna(True).astype(bool), '#00aa00')
     if params.get('CVfil'):
@@ -153,10 +163,14 @@ def quality(results, options=None):
         mark(~iondict['pass_blnkfil'].fillna(True).astype(bool), '#00aaaa')
     if params.get('relfil') and 'pass_relfil' in iondict:
         mark(~iondict['pass_relfil'].fillna(True).astype(bool), '#0000ff')
+    if params.get('mdfil') and 'pass_mdfil' in iondict:
+        mark(~iondict['pass_mdfil'].fillna(True).astype(bool), MASS_DEFECT_COLOUR)
 
+    classes = [(colour, label) for flag, colour, label in BETA_QUALITY_CLASSES
+               if params.get(flag)] + list(QUALITY_CLASSES)
     iondict['_colour'] = colours
     series = []
-    for colour, label in QUALITY_CLASSES:
+    for colour, label in classes:
         rows = iondict[iondict['_colour'] == colour]
         series.append({
             'key': label,

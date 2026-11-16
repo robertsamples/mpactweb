@@ -17,6 +17,7 @@ exactly as the desktop converts in place.
 
 import csv
 import json
+import re
 import shutil
 import tempfile
 import traceback
@@ -212,14 +213,55 @@ def fragments_summary(path):
         entries = translators.parse_fragments(path)
     except Exception as exc:  # noqa: BLE001
         return {'error': f'could not parse fragment file: {exc}'}
-    return {'entries': len(entries), 'kind': Path(path).suffix.lower().lstrip('.')}
+    summary = {'entries': len(entries), 'kind': Path(path).suffix.lower().lstrip('.')}
+    mode = ionmode_hint(path)
+    if mode:
+        summary['ionmode'] = mode
+    return summary
+
+
+# What a file says about its polarity: an MSP/MGF's ``IONMODE: Negative`` or
+# ``Charge: 1-`` (``CHARGE=1-``) line, or an ion type such as ``[M-H]-`` (an
+# MS-DIAL alignment's "Adduct type" column, an MSP's ``PRECURSORTYPE``).
+_IONMODE_LINE = re.compile(r'^\s*ION_?MODE\s*[:=]\s*(P|N)', re.IGNORECASE)
+_CHARGE_LINE = re.compile(r'^\s*CHARGE\s*[:=]\s*\d*\s*([+-])', re.IGNORECASE)
+_ION_TYPE = re.compile(r'\[\d*M[^\]\s]*\]\d*([+-])')
+IONMODE_SCAN_LINES = 4000
+
+
+def ionmode_hint(path):
+    """``'pos'`` or ``'neg'`` if the first few thousand lines of a peak
+    table or spectrum file say which, else None. Only ever a suggestion: the
+    ion mode is a setting, and most peak tables do not say."""
+    votes = {'pos': 0, 'neg': 0}
+    try:
+        with open(path, encoding='utf-8', errors='replace') as handle:
+            for number, line in enumerate(handle):
+                if number >= IONMODE_SCAN_LINES:
+                    break
+                found = _IONMODE_LINE.match(line)
+                if found:
+                    votes['pos' if found.group(1).upper() == 'P' else 'neg'] += 1
+                    continue
+                found = _CHARGE_LINE.match(line) or _ION_TYPE.search(line)
+                if found:
+                    votes['pos' if found.group(1) == '+' else 'neg'] += 1
+    except OSError:
+        return None
+    if votes['pos'] == votes['neg']:
+        return None
+    return 'pos' if votes['pos'] > votes['neg'] else 'neg'
 
 
 def inspect_file(session, record):
     """Per-kind inspection summary, stored on the library record."""
     path = session.path_for(record)
     if record.kind == 'peaktable':
-        return peaktable_summary(session, record)
+        summary = peaktable_summary(session, record)
+        mode = ionmode_hint(path)
+        if mode and 'error' not in summary:
+            summary['ionmode'] = mode
+        return summary
     if record.kind == 'samplelist':
         return table_summary(path, ('Sample_Code', 'Injection'))
     if record.kind == 'metadata':

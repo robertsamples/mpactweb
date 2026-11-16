@@ -14,7 +14,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-Kind = Literal['peaktable', 'samplelist', 'metadata', 'fragments']
+from . import ions
+
+Kind =Literal['peaktable', 'samplelist', 'metadata', 'fragments']
 
 
 class GroupSetIn(BaseModel):
@@ -69,6 +71,44 @@ class AnalysisSettings(BaseModel):
     decon: bool = True                      # checkBox_decon
     deconthresh: float = 0.95               # lineEdit_insourcethresh
 
+    # --- Ion mode --------------------------------------------------------
+    # Which ions the features are: read by the adduct filter and the database
+    # search. The desktop's only equivalent is ``mode`` in adduct_config.txt.
+    ionmode: Literal['pos', 'neg'] = 'pos'
+
+    # --- Beta filters ----------------------------------------------------
+    # A run with none of them on is the published pipeline. The desktop reads
+    # the same switches from adduct_config.txt, where all three start off;
+    # here the mass defect filter starts on and the other two off. A saved
+    # session or an earlier run that predates them gets these defaults.
+    #
+    # Mass defect filter (filter.mdfilter).
+    mdfil: bool = True
+    md_halogen: bool = False
+    # Isotope filter (filter.relationalfilter_beta). While on it runs in place
+    # of the mispicked-peak correction above, whose settings are kept.
+    relfil_beta: bool = False
+    iso_ppm: float = 3.0
+    iso_max_n: int = 3
+    iso_ratio_max: float = 0.7
+    ring_ppm: float = 800.0
+    ring_ratio_max: float = 0.01
+    dimer_tol: float = 0.02
+    # Adduct filter (filter.adductgroup). While on it runs in place of the
+    # in-source deconvolution above, whose settings are kept.
+    adductgrp: bool = False
+    adduct_ppm: float = 3.0
+    adduct_rt_win: float = 0.02
+    # Forms the adduct filter groups, as labels from ions.FORMS. One list for
+    # both modes; a run uses the ones that belong to its ion mode.
+    adducts: list[str] = Field(
+        default_factory=lambda: ions.default_selection(ions.GROUPING_DEFAULT))
+    # Cross-sample correlation two ion forms must show (Pearson r above
+    # corr_cut with p below corr_p). The pipeline has one pair of values for
+    # both the isotope and the adduct filter.
+    corr_cut: float = 0.75
+    corr_p: float = 0.05
+
     # --- Analysis Settings: calculations ---------------------------------
     FC: bool = True                         # checkBox_fc
     Ttest: bool = True                      # checkBox_ttest
@@ -95,6 +135,11 @@ class AnalysisSettings(BaseModel):
     # it supersedes kingdom/genus, which are still filled for the desktop.
     taxon_level: str = ''
     taxon: str = ''
+    # Ion forms a feature's m/z is tried as, as labels from ions.FORMS. One
+    # list for both modes, like ``adducts``. The positive defaults are the
+    # pair the desktop search has built in.
+    search_adducts: list[str] = Field(
+        default_factory=lambda: ions.default_selection(ions.SEARCH_DEFAULT))
 
     # --- Plot Feature Sets ------------------------------------------------
     # Empty means "use the desktop's implicit default": one set covering every
@@ -102,19 +147,35 @@ class AnalysisSettings(BaseModel):
     # params.default_groupsets.
     groupsets: list[GroupSetIn] = Field(default_factory=list)
 
-    @field_validator('ringingwin', 'isopeakwin', 'RTwin', 'cvthresh', 'ppmthresh')
+    @field_validator('ringingwin', 'isopeakwin', 'RTwin', 'cvthresh', 'ppmthresh',
+                     'iso_ppm', 'ring_ppm', 'dimer_tol', 'adduct_ppm', 'adduct_rt_win')
     @classmethod
     def _positive(cls, value, info):
         if value <= 0:
             raise ValueError(f'{info.field_name} must be greater than 0')
         return value
 
-    @field_validator('deconthresh')
+    @field_validator('deconthresh', 'iso_ratio_max', 'ring_ratio_max', 'corr_cut', 'corr_p')
     @classmethod
-    def _correlation_range(cls, value):
+    def _correlation_range(cls, value, info):
         if not 0 < value <= 1:
-            raise ValueError('deconthresh must be in (0, 1]')
+            raise ValueError(f'{info.field_name} must be in (0, 1]')
         return value
+
+    @field_validator('iso_max_n')
+    @classmethod
+    def _isotope_count_range(cls, value):
+        if not 1 <= value <= 5:
+            raise ValueError('iso_max_n must be between 1 and 5')
+        return value
+
+    @field_validator('adducts', 'search_adducts')
+    @classmethod
+    def _known_ion_forms(cls, value, info):
+        unknown = [label for label in value if not ions.known(label)]
+        if unknown:
+            raise ValueError(f'{info.field_name}: unknown ion form(s) {", ".join(unknown)}')
+        return list(dict.fromkeys(value))
 
     @field_validator('maxisowin')
     @classmethod

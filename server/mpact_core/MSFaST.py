@@ -192,6 +192,11 @@ def run_MSFaST(params):
     # filter, which reads it) can't raise NameError if grpave is ever off.
     # The GUI currently forces grpave=True, but loaded sessions/tests need not.
     groupionlists = {}
+    # 质量亏损过滤(在relfil/decon之前,先清掉化学上不可能的噪声离子)
+    # Its own switch: it used to sit inside `if relfil`, so it never ran with
+    # peak correction off.
+    if getattr(analysis_params, 'mdfil', False):
+        ionfilters = filter.mdfilter(analysis_params, ionfilters)
     if analysis_params.relfil:
         ionfilters = filter.relationalfilter(analysis_params, ionfilters)
         if analysis_params.merge:
@@ -212,6 +217,9 @@ def run_MSFaST(params):
         ionfilters = filter.cvfilter(analysis_params, ionfilters, analysis_params.cvthresh)
     if analysis_params.decon:
         ionfilters = filter.decon(analysis_params, ionfilters)
+    if getattr(analysis_params, 'adductgrp', False):   # 新增:加合物/在源裂解/二聚体归组
+        adduct_removed = filter.adductgroup(analysis_params, getattr(analysis_params, 'adduct_list', None))
+        ionfilters['adduct'] = filter.ionfilter('', list(adduct_removed))
     filter.applyfilters(analysis_params, ionfilters)
     if analysis_params.prperr:
         stats.properr(analysis_params)
@@ -220,6 +228,8 @@ def run_MSFaST(params):
     groupionlists['cv'] = ionfilters['cv'].ions if analysis_params.CVfil else []
     groupionlists['relfil'] = ionfilters['relfil'].ions if analysis_params.relfil else []
     groupionlists['insource'] = ionfilters['insource'].ions if analysis_params.decon else []
+    groupionlists['adduct'] = ionfilters['adduct'].ions if getattr(analysis_params, 'adductgrp', False) else []
+    groupionlists['massdefect'] = ionfilters['massdefect'].ions if getattr(analysis_params, 'mdfil', False) else []
 
     # Add groups column to iondict csv
     iondict = pd.read_csv(analysis_params.outputdir / 'iondict.csv', sep=',', header=0, index_col=None)
@@ -234,9 +244,18 @@ def run_MSFaST(params):
     # rather than each groupset() call below re-reading the file from disk
     # itself (previously: once per Plot Feature Set configured).
     iondict_by_compound = iondict.set_index('Compound')
+    # Features the mass defect filter or adduct grouping removed belong to no
+    # Plot Feature Set. The older filters are kept out through the
+    # cv/rel/insource tokens the caller puts in each set's exclusions; these
+    # two have no token, and a mass-defect failure is dropped before group
+    # averaging, so it has an empty `groups` string that no exclusion matches.
+    beta_removed = {str(ion) for name in ('massdefect', 'adduct') for ion in groupionlists[name]}
+    plottable = iondict_by_compound
+    if beta_removed:
+        plottable = iondict_by_compound[~iondict_by_compound.index.astype(str).isin(beta_removed)]
     groupsets, filtereddfs = {}, {}
     for elem in analysis_params.querylist:
-        groupsets[elem] = groupset(elem, analysis_params.querydict[elem], iondict_by_compound)
+        groupsets[elem] = groupset(elem, analysis_params.querydict[elem], plottable)
         filtereddfs[elem] = filter.listfilter(iondict, groupsets[elem].ionlist, True)
 
 
@@ -283,12 +302,16 @@ def run_MSFaST(params):
 
 
     text = ''
+    if getattr(analysis_params, 'mdfil', False):
+        text += 'Features failing mass defect filtering: ' + str(len(ionfilters['massdefect'].ions)) + '/' + str(len(msdata_unformatted.index)) + ' ' + str(round(100 * len(ionfilters['massdefect'].ions) / len(msdata_unformatted.index), 2)) + '%\n'
     if analysis_params.relfil:
         text += 'Features failing peak correction filtering: ' + str(len(ionfilters['relfil'].ions)) + '/' + str(len(msdata_unformatted.index)) + ' ' + str(round(100 * len(ionfilters['relfil'].ions) / len(msdata_unformatted.index), 2)) + '%\n'
     if analysis_params.blnkfltr:
         text += 'Features failing blank filtering: ' + str(len(groupionlists[analysis_params.blnkgrp])) + '/' + str(len(msdata_unformatted.index)) + ' ' + str(round(100 * len(groupionlists[analysis_params.blnkgrp]) / len(msdata_unformatted.index), 2)) + '%\n'
     if analysis_params.decon:
         text += 'Features failing in-source/deconvolution filtering: ' + str(len(ionfilters['insource'].ions)) + '/' + str(len(msdata_unformatted.index)) + ' ' + str(round(100 * len(ionfilters['insource'].ions) / len(msdata_unformatted.index), 2)) + '%\n'
+    if getattr(analysis_params, 'adductgrp', False):
+        text += 'Features removed by adduct grouping: ' + str(len(ionfilters['adduct'].ions)) + '/' + str(len(msdata_unformatted.index)) + ' ' + str(round(100 * len(ionfilters['adduct'].ions) / len(msdata_unformatted.index), 2)) + '%\n'
     if analysis_params.CVfil:
         text += 'Features failing CV filtering: ' + str(len(ionfilters['cv'].ions)) + '/' + str(len(msdata_unformatted.index)) + ' ' + str(round(100 * len(ionfilters['cv'].ions) / len(msdata_unformatted.index), 2)) + '%\n'
     text += 'Features failing any filters: ' + str(len(msdata_unformatted.index) - len(msdata_filtered.index)) + '/' + str(len(msdata_unformatted.index)) + ' ' + str(round(100 * (len(msdata_unformatted.index) - len(msdata_filtered.index)) / len(msdata_unformatted.index), 2)) + '%\n'

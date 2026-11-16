@@ -62,7 +62,7 @@ export const saveRailPrefs = savePrefs;
 // field table; Feature Info shows all of them.
 const RAIL_FIELDS = new Set([
   'm/z', 'Retention time (min)', 'kmd', 'max', 'fc', 'logfc',
-  '-logp', '-logq', 'median CV', 'hits', 'groups',
+  '-logp', '-logq', 'median CV', 'hits', 'adduct_form', 'groups',
 ]);
 
 export function createDetailsRail({ onCollapse, onOpenFeatureInfo } = {}) {

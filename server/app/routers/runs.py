@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from .. import config, jobs, storage
+from .. import config, ions, jobs, storage
 from ..deps import check_storage, get_file, get_role, get_run, get_session, limits
 from ..schemas import AnalysisSettings, JobStatus, RunLabel, RunRequest
 
@@ -17,7 +17,7 @@ router = APIRouter(prefix='/api/runs', tags=['runs'])
 @router.get('/defaults')
 def defaults():
     """The form's initial state: the desktop's Qt Designer widget defaults."""
-    return {'settings': AnalysisSettings().model_dump()}
+    return {'settings': AnalysisSettings().model_dump(), 'ions': ions.catalogue()}
 
 
 @router.get('')

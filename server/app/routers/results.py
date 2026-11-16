@@ -11,7 +11,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
-from .. import config, plotdata, storage
+from .. import config, ions, plotdata, storage
 from .. import results as resultstore
 from ..core import csvcache, dbsearch, getfragdb
 from ..deps import get_results, get_run
@@ -385,7 +385,8 @@ def feature_matches(compound: str = CompoundParam,
         atlas = featuredata.atlas_for(params)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    matches = featuredata.matches_for_mass(atlas, mass, params.get('ppmthresh', 10))
+    matches = featuredata.matches_for_mass(atlas, mass, params.get('ppmthresh', 10),
+                                           ions.run_ions(params))
     for match in matches:
         match['compound_smiles'] = hitdata.canonical_smiles(match.get('compound_smiles'))
     try:
@@ -407,6 +408,7 @@ def feature_matches(compound: str = CompoundParam,
         'genus': params.get('genus', ''),
         'taxon_level': params.get('taxon_level', ''),
         'taxon': params.get('taxon', ''),
+        'ions': ions.run_ions(params),
         'fields': [{'key': key, 'label': label} for key, label in featuredata.ATLAS_FIELDS],
         'matches': matches,
     }
@@ -420,6 +422,11 @@ def run_database_search(results: RunResults = Depends(get_results)):
     function ``MainWindow.fulldbsearch`` calls -- which writes a ``hits``
     column back into ``iondict.csv``. That is what fills the feature table's
     Hits column, exactly as opening the desktop's Feature Info tab does.
+
+    That function is written around NPAtlas's two positive-ion columns. A
+    run searching any other set of ion forms (negative mode, or a different
+    choice of adducts) goes through ``featuredata.search_atlas``, which
+    counts and writes the same way for the forms given.
 
     Kept as an explicit action rather than run automatically at the end of
     every analysis: it costs seconds per run, needs a ~33MB reference table
@@ -436,10 +443,17 @@ def run_database_search(results: RunResults = Depends(get_results)):
     # Feature Info and a click on the button can overlap) queues behind this
     # one instead of interleaving two writes of the same file, and so that a
     # table refresh waits for the rewrite rather than parsing half of it.
+    labels = tuple(ions.run_ions(params))
+    ppm = float(params.get('ppmthresh', 10))
     with resultstore.exclusive(results.iondict_path):
         try:
-            hitdb, _ = dbsearch.search_npatlas(
-                results.outputdir, results.stem, atlas, float(params.get('ppmthresh', 10)))
+            if labels == ions.LEGACY_SEARCH:
+                hitdb, _ = dbsearch.search_npatlas(results.outputdir, results.stem, atlas, ppm)
+                searched = len(hitdb)
+                matched = sum(1 for frame in hitdb.values() if len(frame))
+            else:
+                searched, matched = featuredata.search_atlas(
+                    results.outputdir, results.stem, atlas, ppm, labels)
         finally:
             # The vendored search memoises its reads by path alone and only
             # drops them on success; after a failure the next search would
@@ -448,8 +462,9 @@ def run_database_search(results: RunResults = Depends(get_results)):
     # iondict.csv changed on disk; the results cache is mtime-keyed, so the
     # next read picks it up without an explicit invalidation.
     return {
-        'searched': len(hitdb),
-        'matched': sum(1 for frame in hitdb.values() if len(frame)),
+        'searched': searched,
+        'matched': matched,
+        'ions': list(labels),
         'ppm_threshold': params.get('ppmthresh', 10),
         'kingdom': params.get('kingdom', ''),
         'genus': params.get('genus', ''),
@@ -480,6 +495,8 @@ def run_msms_search(options: dict | None = None, run=Depends(get_run),
                                      bool(options.get('match_precursor', True)))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {'searched': record['searched'], 'features': record['features'],
             'with_candidates': record['with_candidates'],
             'matched': sum(1 for found in record['hits'].values() if found),
@@ -571,6 +588,8 @@ DOWNLOADS = {
     'summarydata': ('{stem}_summarydata.csv', 'Group statistics (wide format)'),
     'iondict': ('iondict.csv', 'Per-feature data for every feature'),
     'analysisinfo': ('analysisinfo.txt', 'Run summary and parameters'),
+    'adduct_attribution': ('adduct_attribution.csv',
+                           'Adduct groups: each kept feature and the ion forms removed for it'),
     'session': ('{stem}.mpct', 'Session file (opens in the MPACT desktop app)'),
 }
 

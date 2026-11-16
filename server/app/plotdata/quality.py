@@ -72,6 +72,12 @@ def cvplot(results, options=None):
 # Filter classes in the desktop's treemap order, with its colours. The order
 # matters: each entry's count is "features lost at this step", computed
 # against the running total left by the previous steps.
+# The two beta filters' classes, here and in the feature-quality scatter.
+# Chosen to stay apart from the desktop's five under colour-blind vision
+# (worst pair, OKLab dE x100: magenta/blue 8.1, brown/red 11.4).
+MASS_DEFECT_COLOUR = '#c800c8'
+ADDUCT_COLOUR = '#6e3b00'
+
 TREEMAP_STEPS = (
     ('relfil', 'Mispicked', '#0000ff'),
     ('blnkfltr', 'Blank', '#00aaaa'),
@@ -88,7 +94,13 @@ def treemap(results, options=None):
 
     counts, colours = {}, []
     current = len(iondict.index)
+    filter_counts = meta.get('filter_counts', {})
 
+    # The mass defect filter runs first and drops what it removes before any
+    # other filter sees it, so its count is its own and needs no running total.
+    if params.get('mdfil'):
+        counts['Mass defect'] = int(filter_counts.get('massdefect', 0))
+        colours.append(MASS_DEFECT_COLOUR)
     if params.get('relfil') and 'pass_relfil' in iondict:
         remaining = int(iondict['pass_relfil'].fillna(False).astype(bool).sum())
         counts['Mispicked'] = current - remaining
@@ -106,6 +118,9 @@ def treemap(results, options=None):
     if params.get('decon'):
         counts['Insource'] = int(meta.get('filter_counts', {}).get('insource', 0))
         colours.append('#00aa00')
+    if params.get('adductgrp'):
+        counts['Adducts'] = int(filter_counts.get('adduct', 0))
+        colours.append(ADDUCT_COLOUR)
 
     # One row of the filtered table per surviving feature; counted off the
     # cached id list rather than by parsing the table under yet another
@@ -136,7 +151,8 @@ def upset(results, options=None):
     params = results.params()
     iondict = results.iondict()
     for flag, column in (('relfil', 'pass_relfil'), ('decon', 'pass_insource'),
-                         ('blnkfltr', 'pass_blnkfil'), ('CVfil', 'pass_cvfil')):
+                         ('blnkfltr', 'pass_blnkfil'), ('CVfil', 'pass_cvfil'),
+                         ('mdfil', 'pass_mdfil'), ('adductgrp', 'pass_adduct')):
         if params.get(flag) and column in iondict:
             iondict = iondict[iondict[column].fillna(False).astype(bool)]
 
@@ -192,8 +208,13 @@ def summary(results, options=None):
         }
 
     filters = []
+    if params.get('mdfil'):
+        filters.append(yield_row('Failing mass defect filtering (beta)',
+                                 filter_counts.get('massdefect', 0)))
     if params.get('relfil'):
-        filters.append(yield_row('Failing peak correction filtering',
+        beta = params.get('relfil_mode') == 'beta'
+        filters.append(yield_row('Failing isotope filtering (beta)' if beta
+                                 else 'Failing peak correction filtering',
                                  filter_counts.get('relfil', 0)))
     if params.get('blnkfltr'):
         filters.append(yield_row('Failing blank filtering',
@@ -201,6 +222,9 @@ def summary(results, options=None):
     if params.get('decon'):
         filters.append(yield_row('Failing in-source/deconvolution filtering',
                                  filter_counts.get('insource', 0)))
+    if params.get('adductgrp'):
+        filters.append(yield_row('Removed by adduct filtering (beta)',
+                                 filter_counts.get('adduct', 0)))
     if params.get('CVfil'):
         filters.append(yield_row('Failing CV filtering', filter_counts.get('cv', 0)))
     filters.append(yield_row('Failing any filter', total_features - surviving))

@@ -527,6 +527,229 @@ function filesView() {
 // Filtering Settings
 // --------------------------------------------------------------------------
 
+const betaTag = () => el('span', { class: 'beta-tag', text: 'beta' });
+
+/** The switch at the top of a section that hands it to a beta filter. While
+ *  it is on, the beta filter runs in place of the section's standard one;
+ *  the standard settings stay in the form, so switching back restores them. */
+function betaSwitch(label, on, onChange, title) {
+  const node = checkbox(label, on, onChange);
+  node.classList.add('beta-switch');
+  node.title = title;
+  node.append(betaTag());
+  return node;
+}
+
+/** The ion forms the current mode offers, from the server's table. */
+function modeForms() {
+  const table = store.get('ions') || {};
+  return table[settings().ionmode || 'pos'] || { forms: [], base: '', name: '' };
+}
+
+/** A checklist of the current mode's ion forms, kept in `settings[key]` as
+ *  one list of labels across both modes: a label belongs to one mode, so
+ *  switching mode and back leaves each mode's ticks as they were. */
+function ionFormList(key, { withBase, onChange }) {
+  const mode = modeForms();
+  const chosen = new Set(settings()[key] || []);
+  const rows = mode.forms.filter((form) => withBase || form.kind !== 'base').map((form) => {
+    const input = el('input', {
+      type: 'checkbox', checked: chosen.has(form.label),
+      on: { change: (event) => {
+        const next = new Set(settings()[key] || []);
+        if (event.target.checked) next.add(form.label); else next.delete(form.label);
+        updateSetting({ [key]: [...next] });
+        if (onChange) onChange();
+      } },
+    });
+    // What the number means differs: a mass difference from the base ion for
+    // the adduct filter, the mass added to the neutral molecule for a search.
+    const value = withBase ? form.added : form.delta;
+    return el('label', { class: 'check ion-form' }, [
+      input,
+      el('span', { class: 'ion-label', text: form.label }),
+      el('span', { class: 'ion-delta', text: `${value >= 0 ? '+' : '−'}${Math.abs(value).toFixed(4)}` }),
+    ]);
+  });
+  return el('div', { class: 'ion-forms' }, rows);
+}
+
+/** What the selected peak table or fragment file says its polarity is. */
+function detectedIonMode() {
+  const inputs = store.get('inputs');
+  for (const kind of ['fragments', 'peaktable']) {
+    const record = store.get('files').find((file) => file.id === inputs[kind]);
+    const mode = record && record.detail && record.detail.ionmode;
+    if (mode) return { mode, file: record.name };
+  }
+  return null;
+}
+
+function ionModePanel() {
+  const s = settings();
+  const setMode = (mode) => {
+    updateSetting({ ionmode: mode });
+    refreshFiltering(); refreshAnalysis(); refreshRun();
+  };
+  const radio = (mode, label) => el('label', {}, [
+    el('input', { type: 'radio', name: 'ionmode', checked: (s.ionmode || 'pos') === mode,
+                  on: { change: () => setMode(mode) } }),
+    el('span', { text: label }),
+  ]);
+  const panel = el('div', { class: 'panel ion-mode' }, [
+    el('h3', {}, [el('span', { text: 'Ion mode' }),
+                  el('span', { class: 'hint',
+                               text: 'used by the adduct filter and the database search' })]),
+    el('div', { class: 'radio-row' }, [radio('pos', 'Positive'), radio('neg', 'Negative'), ]),
+  ]);
+  if (s.ionmode === 'neg') {
+    panel.append(el('p', { class: 'muted' }, [
+      betaTag(), ' Negative mode: features are matched to the database as the ion forms chosen '
+      + 'in Analysis Settings, and the adduct filter measures from [M−H]−. The MS/MS library '
+      + 'holds positive-mode spectra only, so the MS/MS search is not available.']));
+  }
+  const detected = detectedIonMode();
+  if (detected && detected.mode !== (s.ionmode || 'pos')) {
+    const name = detected.mode === 'neg' ? 'negative' : 'positive';
+    panel.append(el('div', { class: 'notice warn' }, [
+      el('span', { text: `${detected.file} looks like ${name}-mode data. ` }),
+      el('button', { class: 'btn small', text: `Switch to ${name}`,
+                     on: { click: () => setMode(detected.mode) } }),
+    ]));
+  }
+  return panel;
+}
+
+function mispickedPanel() {
+  const s = settings();
+  const rerender = () => refreshFiltering();
+  const panel = el('div', { class: 'panel' }, [
+    el('h3', { text: 'Mispicked peaks' }),
+    betaSwitch('Beta isotope filter', s.relfil_beta,
+               (v) => { updateSetting({ relfil_beta: v }); rerender(); refreshRun(); },
+               'Run the beta isotope filter in place of the mispicked-peak correction'),
+  ]);
+  if (!s.relfil_beta) {
+    panel.append(
+      checkbox('Mispicked Peak Correction', s.relfil, (v) => { updateSetting({ relfil: v }); rerender(); }),
+      checkbox('Merge Peaks', s.merge, (v) => updateSetting({ merge: v })),
+      field('Ringing Mass Window', numberInput(s.ringingwin, (v) => updateSetting({ ringingwin: v }),
+                                               { disabled: !s.relfil })),
+      field('Isotope Mass Window', numberInput(s.isopeakwin, (v) => updateSetting({ isopeakwin: v }),
+                                               { disabled: !s.relfil }),
+            'also used as the dimer window'),
+      field('tR Window', numberInput(s.RTwin, (v) => updateSetting({ RTwin: v }),
+                                     { disabled: !s.relfil })),
+      field('Max Isotopic Mass Shift',
+            select([0, 1, 2, 3, 4, 5], s.maxisowin, (v) => updateSetting({ maxisowin: Number(v) }),
+                   { disabled: !s.relfil })));
+    return panel;
+  }
+  panel.append(
+    el('p', { class: 'muted',
+              text: 'Runs in place of the mispicked-peak correction. Removes isotope, ringing and '
+                    + 'doubly charged peaks, and only when they are weaker than the co-eluting '
+                    + 'peak they belong to.' }),
+    checkbox('Merge Peaks', s.merge, (v) => updateSetting({ merge: v })),
+    field('tR Window', numberInput(s.RTwin, (v) => updateSetting({ RTwin: v })),
+          'min; shared with the standard correction'),
+    field('Isotope Mass Tolerance', numberInput(s.iso_ppm, (v) => updateSetting({ iso_ppm: v }), { min: 0 }),
+          'ppm, around each multiple of the 13C spacing (1.00335)'),
+    field('Isotope Peaks per Feature',
+          select([1, 2, 3, 4, 5], s.iso_max_n, (v) => updateSetting({ iso_max_n: Number(v) }))),
+    field('Ringing Window', numberInput(s.ring_ppm, (v) => updateSetting({ ring_ppm: v }), { min: 0 }),
+          'ppm above the parent peak'),
+    field('Ringing Intensity Limit',
+          numberInput(s.ring_ratio_max, (v) => updateSetting({ ring_ratio_max: v }), { min: 0, max: 1 }),
+          'fraction of the parent peak; a ringing peak is weaker than this'),
+    collapsible({
+      title: 'More',
+      open: false,
+      body: el('div', {}, [
+        field('Isotope Intensity Limit',
+              numberInput(s.iso_ratio_max, (v) => updateSetting({ iso_ratio_max: v }), { min: 0, max: 1 }),
+              'fraction of the parent peak; an isotope peak is no stronger than this'),
+        field('Doubly Charged Tolerance',
+              numberInput(s.dimer_tol, (v) => updateSetting({ dimer_tol: v }), { min: 0 }),
+              'Da, around a half-integer mass difference'),
+        field('Correlation Threshold',
+              numberInput(s.corr_cut, (v) => updateSetting({ corr_cut: v }), { min: 0, max: 1 }),
+              'Pearson r across samples; shared with the beta adduct filter'),
+        field('Correlation p Value',
+              numberInput(s.corr_p, (v) => updateSetting({ corr_p: v }), { min: 0, max: 1 }),
+              'the correlation must be significant below this'),
+      ]),
+    }));
+  return panel;
+}
+
+function insourcePanel() {
+  const s = settings();
+  const rerender = () => refreshFiltering();
+  const panel = el('div', { class: 'panel' }, [
+    el('h3', { text: 'In-source fragments & adducts' }),
+    betaSwitch('Beta adduct filter', s.adductgrp,
+               (v) => { updateSetting({ adductgrp: v }); rerender(); refreshRun(); },
+               'Run the beta adduct filter in place of in-source fragment deconvolution'),
+  ]);
+  if (!s.adductgrp) {
+    panel.append(
+      checkbox('Insource Ion Filter', s.decon, (v) => { updateSetting({ decon: v }); rerender(); }),
+      field('Correlation threshold',
+            numberInput(s.deconthresh, (v) => updateSetting({ deconthresh: v }),
+                        { disabled: !s.decon, min: 0, max: 1 }),
+            'a high threshold avoids filtering genuinely co-regulated analytes'),
+      el('p', { class: 'muted',
+                text: 'Within a highly correlated cluster of co-eluting features, the '
+                      + 'highest-mass feature is taken as the parent ion and the rest are '
+                      + 'filtered as likely in-source fragments.' }));
+    return panel;
+  }
+  const mode = modeForms();
+  panel.append(
+    el('p', { class: 'muted',
+              text: 'Runs in place of in-source deconvolution. Co-eluting features whose m/z '
+                    + 'differ by one of the ion forms ticked below, and whose abundances rise and '
+                    + 'fall together across samples, are grouped as one molecule; the most '
+                    + 'abundant is kept.' }),
+    el('div', { class: 'field' }, [
+      el('label', { text: `Ion forms to group, as m/z difference from ${mode.base || 'the base ion'}` }),
+      ionFormList('adducts', { withBase: false, onChange: refreshRun }),
+      el('div', { class: 'suffix',
+                  text: `${mode.name || 'Positive'} mode. Change the mode under Ion mode above.` }),
+    ]),
+    field('m/z Tolerance', numberInput(s.adduct_ppm, (v) => updateSetting({ adduct_ppm: v }), { min: 0 }),
+          'ppm'),
+    field('tR Window', numberInput(s.adduct_rt_win, (v) => updateSetting({ adduct_rt_win: v }), { min: 0 }),
+          'min; forms of one molecule elute together'),
+    field('Correlation Threshold',
+          numberInput(s.corr_cut, (v) => updateSetting({ corr_cut: v }), { min: 0, max: 1 }),
+          'Pearson r across samples; shared with the beta isotope filter'));
+  return panel;
+}
+
+function massDefectPanel() {
+  const s = settings();
+  return el('div', { class: 'panel' }, [
+    el('h3', { text: 'Mass defect filtering' }),
+    el('div', { class: 'beta-line' }, [betaTag()]),
+    checkbox('Mass Defect Filter', s.mdfil,
+             (v) => { updateSetting({ mdfil: v }); refreshFiltering(); refreshRun(); }),
+    (() => {
+      const node = checkbox('Allow halogenated compounds', s.md_halogen,
+                            (v) => updateSetting({ md_halogen: v }));
+      node.querySelector('input').disabled = !s.mdfil;
+      node.classList.toggle('disabled', !s.mdfil);
+      node.title = 'Widens the allowed band for compounds carrying several Cl or Br';
+      return node;
+    })(),
+    el('p', { class: 'muted',
+              text: 'Removes features whose m/z cannot belong to a singly charged CHNOPS '
+                    + 'molecule: mostly multiply charged ions, salt clusters and noise. It runs '
+                    + 'first, and can only rule features out below about m/z 690.' }),
+  ]);
+}
+
 function filteringView() {
   const node = el('div');
 
@@ -539,23 +762,11 @@ function filteringView() {
       ['Mispicked peaks, solvent-blank features, nonreproducible features and '
        + 'in-source fragments.']));
 
+    node.append(ionModePanel());
+
     node.append(el('div', { class: 'grid cols-2' }, [
       // --- mispicked peaks -------------------------------------------
-      el('div', { class: 'panel' }, [
-        el('h3', { text: 'Mispicked peaks' }),
-        checkbox('Mispicked Peak Correction', s.relfil, (v) => { updateSetting({ relfil: v }); refreshFiltering(); }),
-        checkbox('Merge Peaks', s.merge, (v) => updateSetting({ merge: v })),
-        field('Ringing Mass Window', numberInput(s.ringingwin, (v) => updateSetting({ ringingwin: v }),
-                                                 { disabled: !s.relfil })),
-        field('Isotope Mass Window', numberInput(s.isopeakwin, (v) => updateSetting({ isopeakwin: v }),
-                                                 { disabled: !s.relfil }),
-              'also used as the dimer window'),
-        field('tR Window', numberInput(s.RTwin, (v) => updateSetting({ RTwin: v }),
-                                       { disabled: !s.relfil })),
-        field('Max Isotopic Mass Shift',
-              select([0, 1, 2, 3, 4, 5], s.maxisowin, (v) => updateSetting({ maxisowin: Number(v) }),
-                     { disabled: !s.relfil })),
-      ]),
+      mispickedPanel(),
 
       // --- blank filtering / group parsing ---------------------------
       el('div', { class: 'panel' }, [
@@ -615,19 +826,11 @@ function filteringView() {
                         + 'nonreproducible replicates.' }),
       ]),
 
-      // --- in-source deconvolution -----------------------------------
-      el('div', { class: 'panel' }, [
-        el('h3', { text: 'In-source fragment deconvolution' }),
-        checkbox('Insource Ion Filter', s.decon, (v) => { updateSetting({ decon: v }); refreshFiltering(); }),
-        field('Correlation threshold',
-              numberInput(s.deconthresh, (v) => updateSetting({ deconthresh: v }),
-                          { disabled: !s.decon, min: 0, max: 1 }),
-              'a high threshold avoids filtering genuinely co-regulated analytes'),
-        el('p', { class: 'muted',
-                  text: 'Within a highly correlated cluster of co-eluting features, the '
-                        + 'highest-mass feature is taken as the parent ion and the rest are '
-                        + 'filtered as likely in-source fragments.' }),
-      ]),
+      // --- in-source deconvolution / adducts --------------------------
+      insourcePanel(),
+
+      // --- mass defect ------------------------------------------------
+      massDefectPanel(),
     ]));
   };
 
@@ -911,6 +1114,14 @@ function analysisView() {
           }),
         }).node),
       ]),
+      el('div', { class: 'field' }, [
+        el('label', { text: `Ion forms a feature is searched as (${modeForms().name || 'Positive'} mode), `
+                            + 'with the mass each adds to the molecule' }),
+        ionFormList('search_adducts', { withBase: true, onChange: refreshRun }),
+        el('div', { class: 'suffix',
+                    text: 'With none ticked, the first two are used. More forms means more matches '
+                          + 'by chance.' }),
+      ]),
       (store.get('health') || {}).npatlas === false
         ? el('div', { class: 'notice warn',
                       text: 'NPAtlas is not installed on this server, so database matching '
@@ -944,6 +1155,12 @@ function validate() {
                   + 'Add them with Edit on File Selection.');
   }
   if (s.blnkfltr && !s.blnkgrp) problems.push('Blank filtering is on but no blank group is selected.');
+  if (s.adductgrp) {
+    const grouped = new Set(s.adducts || []);
+    if (!modeForms().forms.some((form) => form.kind !== 'base' && grouped.has(form.label))) {
+      problems.push('The beta adduct filter is on but no ion forms are ticked for this ion mode.');
+    }
+  }
   if (s.Ttest && !(s.expgrp && s.ctrgrp)) {
     problems.push('The t-test needs an experimental and a control group.');
   }
@@ -974,13 +1191,19 @@ function runView() {
     } else {
       const s = settings();
       const active = [
-        s.relfil && 'mispicked-peak correction',
+        s.mdfil && 'mass defect filter (beta)',
+        s.relfil_beta ? 'isotope filter (beta)' : s.relfil && 'mispicked-peak correction',
         s.blnkfltr && `blank filtering (${s.blnkgrp})`,
         s.CVfil && `CV filter (${s.cvparam} ≥ ${s.cvthresh})`,
-        s.decon && `in-source deconvolution (r ≥ ${s.deconthresh})`,
+        s.adductgrp ? `adduct filter (beta, ${(s.adducts || []).filter((label) =>
+          modeForms().forms.some((form) => form.label === label)).length} ion forms)`
+          : s.decon && `in-source deconvolution (r ≥ ${s.deconthresh})`,
       ].filter(Boolean);
       summaryPanel.append(el('div', { class: 'notice ok' },
         [`Filters: ${active.length ? active.join(', ') : 'none'}`]));
+      if (s.ionmode === 'neg') {
+        summaryPanel.append(el('div', { class: 'notice info' }, ['Ion mode: negative (beta)']));
+      }
       if (s.Ttest || s.FC) {
         summaryPanel.append(el('div', { class: 'notice info' },
           [`Statistics: ${s.expgrp} vs ${s.ctrgrp}${s.FDR ? ' with FDR correction' : ''}`]));
@@ -1020,7 +1243,7 @@ function runView() {
         on: { click: async () => {
           store.clearSetup();
           const body = await api.defaults();
-          store.set({ settings: body.settings, groupsets: [], selectedGroupset: -1 });
+          store.set({ settings: body.settings, ions: body.ions, groupsets: [], selectedGroupset: -1 });
           refreshFiltering(); refreshAnalysis(); refreshRun();
           toast('Settings reset to defaults', 'info');
         } },
@@ -1137,10 +1360,11 @@ export function buildSetupViews() {
   // Load defaults and the library, then let the views repaint.
   (async () => {
     try {
-      if (!store.get('settings')) {
-        const body = await api.defaults();
-        store.set({ settings: body.settings });
-      }
+      // Always asked for: it carries the ion-form table, and a form saved in
+      // this browser by an older version lacks the settings added since.
+      const body = await api.defaults();
+      store.set({ ions: body.ions,
+                  settings: { ...body.settings, ...(store.get('settings') || {}) } });
       store.set({ files: await api.listFiles() });
       // The slots are restored from this browser's storage, the library from
       // the server. A slot can therefore name a file that is no longer there

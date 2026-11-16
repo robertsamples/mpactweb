@@ -10,6 +10,7 @@
  */
 
 import { api } from '../api.js';
+import { citeFooter } from '../credits.js';
 import { clear, el } from '../util.js';
 
 const LAST_EMAIL = 'mpact.login.email';
@@ -30,6 +31,7 @@ export function showLogin(host, status) {
         ]),
         form.node,
       ]),
+      citeFooter(),
     ]));
     form.focus();
   });

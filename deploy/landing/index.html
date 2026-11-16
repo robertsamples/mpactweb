@@ -40,6 +40,34 @@
   a.button:hover { filter: brightness(1.08); }
   footer { margin-top: 2.5rem; font-size: .875rem; color: var(--muted); }
   footer a { color: inherit; }
+  /* Citation and credits. Same text as the app's sign-in screen
+     (web/src/credits.js); keep the two in sync. */
+  .cite { margin: 1.5rem auto 0; max-width: 30rem; font-size: .8rem; line-height: 1.5; }
+  .cite p { margin: 0 0 .4rem; }
+  .cite button {
+    background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
+    cursor: pointer; text-decoration: underline;
+  }
+  dialog {
+    max-width: min(34rem, 92vw); max-height: 88vh; overflow-y: auto; text-align: left;
+    padding: 1.25rem 1.5rem; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--text); font-size: .9rem;
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .5); }
+  dialog header { display: flex; align-items: center; }
+  dialog h2 { margin: 0; flex: 1; font-size: 1.15rem; }
+  dialog h3 {
+    margin: 1.1rem 0 .4rem; padding-bottom: .25rem; border-bottom: 1px solid var(--line);
+    font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  }
+  dialog p { margin: 0 0 .5rem; }
+  dialog .who { margin-bottom: .1rem; }
+  dialog .who span, dialog .quiet { color: var(--muted); }
+  dialog a { color: var(--accent); }
+  dialog header button {
+    padding: .3rem .8rem; border: 1px solid var(--line); border-radius: 6px;
+    background: none; color: inherit; font: inherit; cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -56,7 +84,53 @@
   <footer>
     Free and open source under GPLv3.
     <a href="https://github.com/robertsamples/mpact">Source code</a>
+    <div class="cite">
+      <p>If you use MPACT, please cite: Samples, R. M.; Puckett, S. P.; Balunas, M. J.
+         Metabolomics Peak Analysis Computational Tool (MPACT): An Advanced Informatics Tool
+         for Metabolomics and Data Visualization of Molecules from Complex Biological Samples.
+         <em>Anal. Chem.</em> <strong>2023</strong>, <em>95</em> (23), 8770–8779.
+         <a href="https://doi.org/10.1021/acs.analchem.2c04632">doi:10.1021/acs.analchem.2c04632</a></p>
+      <button type="button" id="open-credits">Credits</button>
+    </div>
   </footer>
 </main>
+
+<dialog id="credits">
+  <header>
+    <h2>Credits</h2>
+    <button type="button" id="close-credits">Close</button>
+  </header>
+
+  <h3>MPACT Web</h3>
+  <p class="who"><strong>Robert M. Samples</strong><span>, Center for Mass Spectrometry, Smith College</span></p>
+  <p>Lead developer. Designed and wrote MPACT Web, and maintains the MPACT analysis
+     pipeline.</p>
+  <p class="who"><strong>Yilu Chen</strong><span>, Department of Food Science, University of Massachusetts Amherst</span></p>
+  <p>Developed the mass defect filter, the adduct and neutral-loss grouping filter, and
+     the revised isotope filter.</p>
+
+  <h3>Original MPACT</h3>
+  <p>Robert M. Samples - Algorithms, UI design, and benchmarking.
+     Sara P. Puckett - UI design, testing, and benchmarking.
+     Marcy J. Balunas (University of Michigan) - Project supervision.</p>
+  <p class="quiet">The original work was supported by National Science Foundation grant
+     IOS-1557914 and the Gordon and Betty Moore Foundation.</p>
+
+  <h3>Citation</h3>
+  <p>Samples, R. M.; Puckett, S. P.; Balunas, M. J. Metabolomics Peak Analysis Computational
+     Tool (MPACT): An Advanced Informatics Tool for Metabolomics and Data Visualization of
+     Molecules from Complex Biological Samples. <em>Anal. Chem.</em> <strong>2023</strong>,
+     <em>95</em> (23), 8770–8779.
+     <a href="https://doi.org/10.1021/acs.analchem.2c04632">doi:10.1021/acs.analchem.2c04632</a></p>
+</dialog>
+<script>
+  (function () {
+    var credits = document.getElementById('credits');
+    document.getElementById('open-credits').addEventListener('click', function () { credits.showModal(); });
+    document.getElementById('close-credits').addEventListener('click', function () { credits.close(); });
+    // Clicking the backdrop closes the dialog.
+    credits.addEventListener('click', function (event) { if (event.target === credits) credits.close(); });
+  })();
+</script>
 </body>
 </html>

@@ -20,15 +20,18 @@ export const FEATURE_FIELDS = [
   ['median CV', 'Median CV', 3],
   ['average CV', 'Mean CV', 3],
   ['hits', 'Database hits', 0],
+  ['adduct_form', 'Ion form (beta adduct filter)', null],
   ['groups', 'Detected in', null],
 ];
 
 // Boolean pass/fail columns, shown together as a filter summary.
 export const FILTER_FIELDS = [
+  ['pass_mdfil', 'Mass defect filter (beta)'],
   ['pass_relfil', 'Mispicked-peak filter'],
   ['pass_blnkfil', 'Blank filter'],
   ['pass_cvfil', 'CV filter'],
   ['pass_insource', 'In-source filter'],
+  ['pass_adduct', 'Adduct filter (beta)'],
 ];
 
 /** True/false rendered as something readable at a glance. */

@@ -22,6 +22,7 @@ feature ID, m/z and retention time.
 | `<name>_summarydata.csv` | Every group statistic in wide format: average abundance per group, biological and technical relative standard deviations and n, the combined uncertainty, and the effective n (Welch-Satterthwaite) |
 | `iondict.csv` | One row per feature, including those removed by filters: m/z, retention time, mass defect, which filters it passed, median CV, groups detected in, maximum abundance, fold change, −log p, −log q and database hit count |
 | `analysisinfo.txt` | Run summary and every parameter, as shown on the [Data Review](data-review.md#summary) tab |
+| `adduct_attribution.csv` | Only when the [beta adduct filter](../setup/filtering.md#beta-adduct-filter) was on: each group's kept feature and the ion forms removed for it |
 | `<name>.mpct` | Session file with the input files and settings |
 | `<name>_filtered_source.csv` | The original peak table, cut down to the features that passed filtering |
 | `<name>_reindexed.msp` / `.mgf` | The fragment database renumbered to match the filtered peak table |
