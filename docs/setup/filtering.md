@@ -4,10 +4,11 @@ MPACT removes unwanted features before computing statistics. Each filter can
 be turned off. The [Data Review](../results/data-review.md) tab reports how
 many features each one removed.
 
-Three of the filters are marked **beta**: the mass defect filter, the isotope
-filter and the adduct filter. They are newer than the published MPACT
-pipeline. The mass defect filter is on by default; the other two are off. With
-all three off, a run uses the published pipeline unchanged.
+Four options are marked **beta**: the mass defect filter, the isotope filter,
+the adduct filter and the CV sample cutoff. They are newer than the published
+MPACT pipeline. The mass defect filter and the CV sample cutoff are on by
+default; the isotope and adduct filters are off.
+With all of them off, a run uses the published pipeline unchanged.
 
 ## Ion mode
 
@@ -105,6 +106,25 @@ or chemically diverse extracts where many features appear in only a few
 samples, up to 0.5 can be appropriate. The [Dendrogram](../results/dendrogram.md)
 helps choose: pick the least strict threshold beyond which technical replicates
 stop clustering together any better.
+
+### Beta CV filter
+
+The CV of a feature is worked out per sample, across that sample's technical
+replicate injections, and then summarised over samples. In a varied set of
+samples a compound may be present in a few and picked up at noise level in
+many others. Those noise-level CVs are high and can decide the median, so a
+well-measured compound fails.
+
+With **Beta CV filter** on, samples whose mean abundance is below the **Sample
+Cutoff** times the feature's highest sample mean are left out of its CV. It is
+on by default, with a cutoff of 0.01; turn it off for the published CV filter.
+`iondict.csv` gains a `CV samples used` column with how many samples each CV
+came from.
+
+On a 42,000-feature dataset of 300 extracts with pooled QC injections, a cutoff
+of 0.01 to 0.03 brought the median CV closest to the CV measured in the QC
+injections. At 0.1 or above, too few samples are left for a reliable CV and
+more poorly reproduced features pass.
 
 !!! note "Peak picking thresholds change the CV plot"
     The intensity threshold used for peak picking in Progenesis, MZmine or

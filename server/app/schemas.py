@@ -66,6 +66,11 @@ class AnalysisSettings(BaseModel):
     CVfil: bool = True                      # checkBox_cv
     cvthresh: float = 0.2                   # lineEdit_cvthresh
     cvparam: Literal['average CV', 'median CV'] = 'median CV'   # radioButton_medcv default
+    # Beta (filter.cvfilter): samples whose mean is below cvgate_frac of the
+    # feature's highest sample mean are left out of its CV. On here; the
+    # desktop default, and the published method, is off.
+    cvgate: bool = True
+    cvgate_frac: float = 0.01
 
     # --- Filtering Settings: in-source deconvolution ---------------------
     decon: bool = True                      # checkBox_decon
@@ -108,6 +113,13 @@ class AnalysisSettings(BaseModel):
     # both the isotope and the adduct filter.
     corr_cut: float = 0.75
     corr_p: float = 0.05
+
+    # Beta sample normalization (stats.samplenormalize), after filtering:
+    # 'pqn' (probabilistic quotient) or 'sum' (total signal).
+    samplenorm: Literal['none', 'pqn', 'sum'] = 'none'
+    # Groups left unscaled and out of the factors, besides the blank group
+    # (which always is): a media blank, say.
+    samplenorm_skip: list[str] = Field(default_factory=list)
 
     # --- Analysis Settings: calculations ---------------------------------
     FC: bool = True                         # checkBox_fc
@@ -155,7 +167,8 @@ class AnalysisSettings(BaseModel):
             raise ValueError(f'{info.field_name} must be greater than 0')
         return value
 
-    @field_validator('deconthresh', 'iso_ratio_max', 'ring_ratio_max', 'corr_cut', 'corr_p')
+    @field_validator('deconthresh', 'iso_ratio_max', 'ring_ratio_max', 'corr_cut', 'corr_p',
+                     'cvgate_frac')
     @classmethod
     def _correlation_range(cls, value, info):
         if not 0 < value <= 1:

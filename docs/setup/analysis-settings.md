@@ -13,6 +13,47 @@ rate correction are always computed for this pair. They drive the
 [Volcano](../results/volcano.md) and [3D Fold Change](../results/fold-change-3d.md)
 plots and the fold-change column in [Feature Info](../results/feature-info.md).
 
+## Sample normalization (beta)
+
+Scales each biological sample so that samples of different concentration can
+be compared, for example extracts diluted differently, or products where sugar
+or another bulk ingredient dilutes everything else. Off by default.
+
+- **Probabilistic quotient** (recommended): each sample's factor is the median,
+  over features, of its abundance divided by that feature's median across
+  samples (Dieterle et al., *Anal. Chem.* 2006, 78, 4281). A few compounds that
+  differ a lot between samples do not move it.
+- **Total signal**: each sample is scaled so its summed abundance matches the
+  median sample. Compounds that are much more abundant in some samples are read
+  as a concentration difference.
+
+The factors are worked out after filtering, from the features that passed
+every filter, so solvent, blank and noise peaks do not set them. One factor
+applies to all injections of a sample, so technical CVs do not change, and the
+filters, which run before it, see the measured abundances. Group averages,
+statistics and plots use the normalized values.
+
+**Leave Out** lists the groups that are not scaled and are not used to work
+out the other samples' factors. The blank group is always left out. Tick any
+other group that is not a diluted version of the samples, such as a media
+blank: it shares only traces of the samples' compounds, so it would otherwise
+read as very dilute and be scaled up many times over. The CHM350 datasets come
+with their media blank already ticked.
+
+Normalization assumes most compounds are at similar levels in every sample
+once dilution is taken out. Groups that really do differ in how much they
+make, such as two strains, break that assumption, and normalizing would remove
+the difference. The run warns when any sample's signal is more than 5 times
+above or below the median sample; check those are dilutions, or leave their
+groups out.
+
+Two extra downloads are written: `<name>_normfactors.csv`, with each sample's
+signal relative to the median sample and the factor applied, and
+`<name>_filtered_raw.csv`, the filtered table before normalization. The
+relative signal is an estimate of relative concentration, but matrix effects
+such as ion suppression change it too, so check it against an internal
+standard or a dilution series before reading it as a dilution factor.
+
 ## Plot Feature Sets
 
 Plot Feature Sets decide which colour each feature is drawn in on the m/z vs

@@ -20,12 +20,12 @@
     "ui_plotparam.py": "generated Qt Designer UI"
   },
   "files": {
-    "MSFaST.py": "a98cb61afc63d05d612d43056d78351e067396fc44dc9395e6356f99b26a6545",
+    "MSFaST.py": "da1cb94e587453ac1c40fe6689e9e974bcf2760eb6422ef5d24041d192d7268c",
     "biogroups.py": "27030f7f009f79808a64367cc95c8c5d581bbfe0779661f946bdbf2d68d1a35a",
     "clusterpurity.py": "e206a74889da2141b12e36ac04644b33488cdde1285e4596a0e36cb4b7e7c0c2",
     "csvcache.py": "0ed50e69de0d19ea1b005db728f7d785d10d47676c749e8dba51cf0300e0af1a",
     "dbsearch.py": "f99f66b88c0d45b507d28a40d7263ed98bf4167ca3e0245fdcdc429999536dd1",
-    "filter.py": "ded22e0cc73433989054783aa3986607685694ff78868f5954b83b210f8633c5",
+    "filter.py": "7d600135dda5baedae12b8e98b16baca42a2b04efa148ba11127ce5364cc5aa3",
     "getfragdb.py": "09907a97056f2912882deba81025cc74266f16be10019340e39056bd22b8c0e0",
     "groupsets.py": "0cdab8f09d09d77275d6b8585b299046230d5f3d9d88236301949ae4b3190e30",
     "mspwriter.py": "004588300e51eaa7d7c18b9db58f3b9c900ad76649faa93be3f1805450e22a08",
@@ -35,7 +35,7 @@
     "ordination.py": "6e2bff5a003938607a301d01c96066873a23ae8af52061e1ff6e4972803f5a06",
     "pvclust.py": "e336ba6a9bb6ce73eb8abd177b025952e190167ad33cffeb71bc6a1158dda455",
     "qualityscore.py": "e9fc03bb54b2fb7ca19e65e57e19fef4094a776d31d095bd1c9ad119e582d575",
-    "stats.py": "c994d190b14fad2216bd9107bfa3b84451ecb55e9dfa46b8e4c0807474724121",
+    "stats.py": "0653ef25044194b14bad44d5203d37b08d098522f3c596b84f9afa2a53bc2304",
     "translators.py": "51bf63d188db23de29ad25ec686918e41b970fb8930a3fe7d19b2b91ab721040",
     "treefilters.py": "69df6e97dc0b3c7e97bd6c6f0c36f238219ee45ba3f654ba2fa26fc3e58bb489"
   },

@@ -128,7 +128,8 @@ def chm350_preset(groups):
     Experimental: the first Eu condition; control: the growth control (GC)
     of the same culture. "All features" leaves out only the solvent blank
     and the media blank; "Elicitor only" also leaves out the growth
-    controls. A dataset run without blanks gets blank filtering off.
+    controls. A dataset run without blanks gets blank filtering off. Media
+    blanks are left out of sample normalization if that is turned on.
     """
     blank = next((g for g in groups if 'blank' in g.lower()), '')
     media = [g for g in groups if 'media' in g.lower()]
@@ -142,7 +143,10 @@ def chm350_preset(groups):
     keep = [g for g in groups if g not in background]
     return {
         'settings': {'blnkfltr': bool(blank), 'blnkgrp': blank,
-                     'expgrp': experimental, 'ctrgrp': control},
+                     'expgrp': experimental, 'ctrgrp': control,
+                     # Off unless sample normalization is turned on: the
+                     # media blank is not a diluted culture.
+                     'samplenorm_skip': media},
         'groupsets': [
             {'name': 'All features', 'colour': BLACK,
              'src': keep, 'incl': [], 'excl': background},

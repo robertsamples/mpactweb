@@ -150,6 +150,12 @@ def _ionmode(params):
     return 'neg' if str(mode).strip().lower().startswith('neg') else 'pos'
 
 
+def _samplenorm(params):
+    """The beta sample normalization method; 'none' for a session without it."""
+    method = str(getattr(params, 'samplenorm', 'none') or 'none').strip().lower()
+    return method if method in ('pqn', 'sum') else 'none'
+
+
 def _ion_forms(params, attr, table):
     """A saved selection of ion forms, less any this version does not know;
     the defaults when the session has none (every desktop session)."""
@@ -195,6 +201,12 @@ def settings_from(params, warnings):
         'CVfil': 'cv' in filters or _flag(params, 'CVfil'),
         'cvthresh': _number(params, 'cvthresh', 0.2),
         'cvparam': 'average CV' if 'average' in cvparam else 'median CV',
+        # A session from before the cutoff gets the form's default, like the
+        # beta filters below.
+        'cvgate': _flag(params, 'cvgate', AnalysisSettings.model_fields['cvgate'].default),
+        'cvgate_frac': _number(params, 'cvgate_frac', 0.01),
+        'samplenorm': _samplenorm(params),
+        'samplenorm_skip': [str(g) for g in getattr(params, 'samplenorm_skip', None) or []],
 
         'decon': 'insource' in filters or _flag(params, 'decon'),
         'deconthresh': _number(params, 'deconthresh', 0.95),

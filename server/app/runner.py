@@ -227,6 +227,23 @@ def _post_run(run, params, result, model, warnings):
         if params.blnkfltr else [],
     }))
 
+    # Beta sample normalization: a factor far from 1 is more often a group
+    # with different contents (a media blank, a strain that makes more) than
+    # a dilution, so say so where the run's warnings are shown.
+    factors_path = outputdir / (Path(params.filename).stem + '_normfactors.csv')
+    if getattr(params, 'samplenorm', 'none') in ('pqn', 'sum') and factors_path.exists():
+        from .core import mpact_stats
+        limit = mpact_stats.EXTREME_FACTOR
+        factors = pd.read_csv(factors_path)
+        relative = factors['relative signal']
+        extreme = factors[(relative < 1 / limit) | (relative > limit)]
+        if len(extreme):
+            groups = list(dict.fromkeys(map(str, extreme['Group'])))
+            warnings.append(
+                f'Sample normalization: {len(extreme)} sample(s) in {", ".join(groups)} are more '
+                f'than {limit:g}x from the median sample. Check they are dilutions, or leave '
+                'their groups out of normalization.')
+
     # --- exports (desktop: export_filtered_outputs) ----------------------
     filtered_internal = outputdir / (Path(params.filename).stem + '_filtered.csv')
     try:

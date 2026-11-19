@@ -258,6 +258,48 @@ def test_parameters_round_trip_through_a_session(tmp_path):
     assert settings['search_adducts'] == ['[M-H]-', '[M+FA-H]-']
 
 
+def test_cv_cutoff_starts_on_and_normalization_off(tmp_path):
+    params = build(tmp_path)
+    assert params.cvgate is True and params.cvgate_frac == 0.01
+    assert params.samplenorm == 'none'
+
+
+def test_cv_cutoff_and_normalization_reach_the_pipeline(tmp_path):
+    params = build(tmp_path, cvgate=True, cvgate_frac=0.03, samplenorm='pqn')
+    assert (params.cvgate, params.cvgate_frac, params.samplenorm) == (True, 0.03, 'pqn')
+    # The cutoff is part of the CV filter; with that off it does nothing.
+    assert build(tmp_path, cvgate=True, CVfil=False).cvgate is False
+
+
+def test_normalization_leaves_out_only_known_groups(tmp_path):
+    params = build(tmp_path, samplenorm='pqn',
+                   samplenorm_skip=['Control', 'not a group', 'Control'])
+    assert params.samplenorm_skip == ['Control']
+    settings = mpctsession.settings_from(params, [])
+    assert settings['samplenorm_skip'] == ['Control']
+    assert mpctsession.settings_from(_saved(), [])['samplenorm_skip'] == []
+    assert build(tmp_path).samplenorm_skip == []
+
+
+def test_cv_cutoff_must_be_a_fraction():
+    with pytest.raises(ValueError):
+        AnalysisSettings(cvgate_frac=0)
+    with pytest.raises(ValueError):
+        AnalysisSettings(samplenorm='median')
+
+
+def test_cv_cutoff_and_normalization_round_trip_through_a_session(tmp_path):
+    params = build(tmp_path, cvgate=True, cvgate_frac=0.02, samplenorm='sum')
+    settings = mpctsession.settings_from(params, [])
+    assert (settings['cvgate'], settings['cvgate_frac'], settings['samplenorm']) == (True, 0.02, 'sum')
+    old = mpctsession.settings_from(_saved(), [])
+    # A session from before the cutoff gets the form's default; one saved
+    # with it off keeps it off.
+    assert (old['cvgate'], old['samplenorm']) == (True, 'none')
+    off = mpctsession.settings_from(build(tmp_path, cvgate=False), [])
+    assert off['cvgate'] is False
+
+
 # --- what an uploaded file says about its polarity --------------------------
 
 @pytest.mark.parametrize('text,expected', [
@@ -385,3 +427,35 @@ def test_the_bootstrap_dendrogram_has_support_for_every_branch(client, beta_run)
         values = payload['bootstrap_values']
         assert len(values) == len(payload['leaves']) - 1 == len(payload['icoord'])
         assert all(0 <= v['au'] <= 1 and 0 <= v['bp'] <= 1 for v in values)
+
+
+def test_a_run_with_the_cv_cutoff_and_normalization(client):
+    run_id = _run(client, cvgate=True, cvgate_frac=0.01, samplenorm='pqn')
+    keys = [item['key'] for item in client.get(f'/api/runs/{run_id}/downloads').json()]
+    assert {'normfactors', 'filtered_raw'} <= set(keys)
+    factors = client.get(f'/api/runs/{run_id}/downloads/normfactors').text
+    assert factors.startswith('Group,Sample,injections,relative signal,factor')
+    info = client.get(f'/api/runs/{run_id}/downloads/analysisinfo').text
+    assert 'CV sample cutoff (beta): 0.01' in info
+    assert 'Sample normalization (beta): probabilistic quotient' in info
+    for name in ('summary', 'cvplot', 'volcano', 'ordination', 'heatmap'):
+        _plot(client, run_id, name)
+
+
+def test_normalization_leaves_a_group_out_and_warns_about_extremes(client):
+    groups = client.post('/api/files/groups', json={
+        kind: record['id'] for record in client.post('/api/files/demo', json={'id': 'pty087i2'}).json()
+        if (kind := record['kind']) in ('peaktable', 'samplelist', 'metadata')}).json()
+    blank = groups['suggested']['blank']
+    left_out = next(g for g in groups['groups'] if g != blank)
+    run_id = _run(client, samplenorm='sum', samplenorm_skip=[left_out])
+    factors = client.get(f'/api/runs/{run_id}/downloads/normfactors').text.splitlines()
+    rows = [line.split(',') for line in factors[1:]]
+    assert all(row[4] == '1.0' and row[3] == '' for row in rows if row[0] == left_out)
+    info = client.get(f'/api/runs/{run_id}/downloads/analysisinfo').text
+    assert f'Left out of normalization: {left_out}' in info
+    status = client.get(f'/api/runs/{run_id}/status').json()
+    extreme = [w for w in status['warnings'] if w.startswith('Sample normalization')]
+    log = client.get(f'/api/runs/{run_id}/log').json()['log']
+    # The status warning and the log line come from the same 5x rule.
+    assert bool(extreme) == ('more than 5x from the median sample' in log)

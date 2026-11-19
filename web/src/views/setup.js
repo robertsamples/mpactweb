@@ -750,6 +750,106 @@ function massDefectPanel() {
   ]);
 }
 
+function cvPanel() {
+  const s = settings();
+  const rerender = () => refreshFiltering();
+  const panel = el('div', { class: 'panel' }, [
+    el('h3', { text: 'CV (reproducibility) filtering' }),
+    betaSwitch('Beta CV filter', s.cvgate,
+               (v) => { updateSetting({ cvgate: v }); rerender(); refreshRun(); },
+               'Leave samples where a feature is near noise level out of its CV'),
+    checkbox('CV Filter', s.CVfil, (v) => { updateSetting({ CVfil: v }); rerender(); }),
+    el('div', { class: 'radio-row' }, [
+      el('label', {}, [
+        el('input', { type: 'radio', name: 'cvparam', checked: s.cvparam === 'median CV',
+                      disabled: !s.CVfil,
+                      on: { change: () => updateSetting({ cvparam: 'median CV' }) } }),
+        el('span', { text: 'Median CV' }),
+      ]),
+      el('label', {}, [
+        el('input', { type: 'radio', name: 'cvparam', checked: s.cvparam === 'average CV',
+                      disabled: !s.CVfil,
+                      on: { change: () => updateSetting({ cvparam: 'average CV' }) } }),
+        el('span', { text: 'Mean CV' }),
+      ]),
+    ]),
+    field('CV Threshold', numberInput(s.cvthresh, (v) => updateSetting({ cvthresh: v }),
+                                      { disabled: !s.CVfil }),
+          'published thresholds are 0.2 to 0.3; up to 0.5 for exploratory work'),
+  ]);
+  if (s.cvgate) {
+    panel.append(
+      field('Sample Cutoff',
+            numberInput(s.cvgate_frac, (v) => updateSetting({ cvgate_frac: v }),
+                        { disabled: !s.CVfil, min: 0, max: 1 }),
+            "fraction of the feature's highest sample mean; samples below it are left out of its CV"),
+      el('p', { class: 'muted',
+                text: 'A compound found in a few samples is often also picked up at noise level in '
+                      + 'others, and those noisy CVs would decide its median. 0.01 to 0.03 worked '
+                      + 'best in testing.' }));
+  } else {
+    panel.append(el('p', { class: 'muted',
+                           text: 'Median CV is recommended: it is less sensitive to a few very '
+                                 + 'nonreproducible replicates.' }));
+  }
+  return panel;
+}
+
+function normalizationPanel() {
+  const s = settings();
+  const method = s.samplenorm || 'none';
+  const notes = {
+    none: 'Abundances are used as measured.',
+    pqn: 'Each sample is scaled by the median ratio of its features to the median sample '
+         + '(probabilistic quotient normalization). Recommended: a few compounds that differ a '
+         + 'lot between samples do not move it.',
+    sum: 'Each sample is scaled so its total signal matches the median sample. Simple, but '
+         + 'compounds that differ a lot between samples read as dilution.',
+  };
+  return el('div', { class: 'panel' }, [
+    el('h3', { text: 'Sample normalization' }),
+    el('div', { class: 'beta-line' }, [betaTag()]),
+    field('Method',
+          select([['none', 'None'], ['pqn', 'Probabilistic quotient'], ['sum', 'Total signal']],
+                 method, (v) => { updateSetting({ samplenorm: v }); refreshAnalysis(); refreshRun(); })),
+    el('p', { class: 'muted', text: notes[method] }),
+    method === 'none' ? null : el('p', { class: 'muted',
+      text: 'Factors come from the features that pass every filter and apply to all injections '
+            + 'of a sample, so technical CVs are unchanged. The factors and the unnormalized '
+            + 'filtered table are among the downloads.' }),
+    method === 'none' ? null : normalizationSkip(),
+  ]);
+}
+
+/** Groups left unscaled and out of the factors. The blank group always is. */
+function normalizationSkip() {
+  const s = settings();
+  const groups = store.get('groups') || [];
+  const blank = s.blnkfltr && s.blnkgrp ? s.blnkgrp : '';
+  const chosen = new Set(s.samplenorm_skip || []);
+  const rows = groups.map((group) => {
+    const isBlank = group === blank;
+    return el('label', { class: 'check ion-form', title: isBlank ? 'The blank group is never scaled' : '' }, [
+      el('input', {
+        type: 'checkbox', checked: isBlank || chosen.has(group), disabled: isBlank,
+        on: { change: (event) => {
+          const next = new Set(settings().samplenorm_skip || []);
+          if (event.target.checked) next.add(group); else next.delete(group);
+          updateSetting({ samplenorm_skip: groups.filter((g) => next.has(g)) });
+          refreshRun();
+        } },
+      }),
+      el('span', { class: 'ion-label', text: group }),
+    ]);
+  });
+  return field('Leave Out',
+    groups.length
+      ? el('div', { class: 'ion-forms' }, rows)
+      : el('p', { class: 'muted', text: 'Select a sample list and metadata to list the groups.' }),
+    'groups that are not diluted versions of the samples, such as media blanks: '
+    + 'not scaled, and not used to work out the other factors');
+}
+
 function filteringView() {
   const node = el('div');
 
@@ -801,30 +901,7 @@ function filteringView() {
       ]),
 
       // --- CV filtering ----------------------------------------------
-      el('div', { class: 'panel' }, [
-        el('h3', { text: 'CV (reproducibility) filtering' }),
-        checkbox('CV Filter', s.CVfil, (v) => { updateSetting({ CVfil: v }); refreshFiltering(); }),
-        el('div', { class: 'radio-row' }, [
-          el('label', {}, [
-            el('input', { type: 'radio', name: 'cvparam', checked: s.cvparam === 'median CV',
-                          disabled: !s.CVfil,
-                          on: { change: () => updateSetting({ cvparam: 'median CV' }) } }),
-            el('span', { text: 'Median CV' }),
-          ]),
-          el('label', {}, [
-            el('input', { type: 'radio', name: 'cvparam', checked: s.cvparam === 'average CV',
-                          disabled: !s.CVfil,
-                          on: { change: () => updateSetting({ cvparam: 'average CV' }) } }),
-            el('span', { text: 'Mean CV' }),
-          ]),
-        ]),
-        field('CV Threshold', numberInput(s.cvthresh, (v) => updateSetting({ cvthresh: v }),
-                                          { disabled: !s.CVfil }),
-              'published thresholds are 0.2 to 0.3; up to 0.5 for exploratory work'),
-        el('p', { class: 'muted',
-                  text: 'Median CV is recommended: it is less sensitive to a few very '
-                        + 'nonreproducible replicates.' }),
-      ]),
+      cvPanel(),
 
       // --- in-source deconvolution / adducts --------------------------
       insourcePanel(),
@@ -1088,6 +1165,7 @@ function analysisView() {
         el('p', { class: 'muted',
                   text: 'The volcano plot compares these two groups.' }),
       ]),
+      normalizationPanel(),
     ]));
 
     node.append(el('div', { class: 'panel' }, [
@@ -1194,7 +1272,8 @@ function runView() {
         s.mdfil && 'mass defect filter (beta)',
         s.relfil_beta ? 'isotope filter (beta)' : s.relfil && 'mispicked-peak correction',
         s.blnkfltr && `blank filtering (${s.blnkgrp})`,
-        s.CVfil && `CV filter (${s.cvparam} ≥ ${s.cvthresh})`,
+        s.CVfil && `CV filter (${s.cvparam} ≥ ${s.cvthresh}${
+          s.cvgate ? `, beta sample cutoff ${s.cvgate_frac}` : ''})`,
         s.adductgrp ? `adduct filter (beta, ${(s.adducts || []).filter((label) =>
           modeForms().forms.some((form) => form.label === label)).length} ion forms)`
           : s.decon && `in-source deconvolution (r ≥ ${s.deconthresh})`,
@@ -1203,6 +1282,12 @@ function runView() {
         [`Filters: ${active.length ? active.join(', ') : 'none'}`]));
       if (s.ionmode === 'neg') {
         summaryPanel.append(el('div', { class: 'notice info' }, ['Ion mode: negative (beta)']));
+      }
+      if (s.samplenorm && s.samplenorm !== 'none') {
+        const skipped = (s.samplenorm_skip || []).filter((g) => store.get('groups').includes(g));
+        summaryPanel.append(el('div', { class: 'notice info' }, [
+          `Sample normalization (beta): ${s.samplenorm === 'pqn' ? 'probabilistic quotient' : 'total signal'}`
+          + (skipped.length ? `, leaving out ${skipped.join(', ')}` : '')]));
       }
       if (s.Ttest || s.FC) {
         summaryPanel.append(el('div', { class: 'notice info' },

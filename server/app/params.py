@@ -167,6 +167,13 @@ def build_params(run, settings, all_groups, input_paths):
     params.statstgrps = [str(settings.expgrp), str(settings.ctrgrp)]
     params.cvthresh = float(settings.cvthresh)
     params.cvparam = settings.cvparam
+    # Beta CV sample cutoff and sample normalization (core reads both with
+    # getattr defaults, so a run without them is the published pipeline).
+    params.cvgate = bool(settings.cvgate) and bool(settings.CVfil)
+    params.cvgate_frac = float(settings.cvgate_frac)
+    params.samplenorm = settings.samplenorm
+    params.samplenorm_skip = [str(g) for g in dict.fromkeys(settings.samplenorm_skip)
+                              if str(g) in set(map(str, all_groups))]
 
     # --- plot/calculation toggles (the desktop's CHECKBOX_FIELDS) ---------
     params.PCA = bool(settings.PCA)

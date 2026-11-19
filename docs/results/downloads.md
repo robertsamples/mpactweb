@@ -17,7 +17,9 @@ feature ID, m/z and retention time.
 |---|---|
 | `<name>_formatted.csv` | The peak table converted to MPACT's internal layout |
 | `<name>_merged.csv` | The formatted table with mispicked peaks merged into their parents (when **Merge Peaks** is on) |
-| `<name>_filtered.csv` | The table after every filter |
+| `<name>_filtered.csv` | The table after every filter (normalized, when [sample normalization](../setup/analysis-settings.md#sample-normalization-beta) is on) |
+| `<name>_filtered_raw.csv` | Only with sample normalization: the filtered table before normalization |
+| `<name>_normfactors.csv` | Only with sample normalization: each sample's relative signal and the factor applied |
 | `<name>_groupaverages.csv` | Average abundance of each feature in each group, in long format |
 | `<name>_summarydata.csv` | Every group statistic in wide format: average abundance per group, biological and technical relative standard deviations and n, the combined uncertainty, and the effective n (Welch-Satterthwaite) |
 | `iondict.csv` | One row per feature, including those removed by filters: m/z, retention time, mass defect, which filters it passed, median CV, groups detected in, maximum abundance, fold change, −log p, −log q and database hit count |
