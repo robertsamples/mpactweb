@@ -104,8 +104,24 @@ class Memo:
 
 
 def _frame_bytes(frame):
+    """Approximate memory held by a parsed table.
+
+    ``memory_usage(deep=False)`` counts only the 8-byte pointer for each text
+    cell, which undercounts a table read as text (``header=None``) about
+    sevenfold, so the cache held several times its byte budget. Text columns
+    are measured on a sample of about 200 rows and scaled up; counting every
+    cell would add seconds to each parse of a large table.
+    """
     try:
-        return int(frame.memory_usage(index=True, deep=False).sum())
+        total = int(frame.memory_usage(index=True, deep=False).sum())
+        rows = len(frame)
+        if rows:
+            sample = frame.iloc[::max(1, rows // 200)].select_dtypes(include='object')
+            if sample.shape[1]:
+                extra = (sample.memory_usage(index=False, deep=True).sum()
+                         - sample.memory_usage(index=False, deep=False).sum())
+                total += int(extra * rows / len(sample))
+        return total
     except Exception:  # noqa: BLE001 - sizing is advisory
         return 0
 

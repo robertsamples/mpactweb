@@ -16,8 +16,12 @@ RUN apt-get update \
        libxrender1 libxext6 curl \
     && rm -rf /var/lib/apt/lists/*
 
+# MALLOC_ARENA_MAX: glibc gives each thread its own memory pool by default,
+# and memory freed from them is rarely returned, so the server's footprint
+# kept growing toward the largest set of tables it had ever held.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    MALLOC_ARENA_MAX=2 \
     PIP_NO_CACHE_DIR=1 \
     MPLBACKEND=Agg \
     MPACT_DATA_ROOT=/data \

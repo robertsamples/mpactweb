@@ -1,0 +1,8 @@
+[Unit]
+Description=Delete the oldest MPACT runs when free disk space is below 10 GB
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/mpact-prune-runs --min-free-gb 10

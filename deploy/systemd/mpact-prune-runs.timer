@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly MPACT run cleanup
+
+[Timer]
+# 08:00 UTC is 3 AM US Eastern in winter, 4 AM in summer.
+OnCalendar=*-*-* 08:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
