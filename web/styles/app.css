@@ -908,6 +908,11 @@ dialog.mapping:focus, dialog.mapping:focus-visible { outline: none; }
   font: inherit; font-size: 12px; cursor: default; position: relative;
 }
 .dino-menu button:hover, .dino-menu button:focus-visible { background: var(--panel); outline: none; }
+.dino-menu .dino-menu-action {
+  border-top: 1px solid var(--border); border-radius: 0; margin-top: 3px; padding-top: 5px;
+}
+.dino-menu button:disabled { color: var(--muted); }
+.dino-menu button:disabled:hover { background: none; }
 .dino-menu button[aria-checked="true"]::before {
   content: "\2713"; position: absolute; left: 6px; color: var(--accent);
 }

@@ -11,6 +11,8 @@
  *   finished while running  run until the stop frame -> stop -> idle
  *   failed while running    run until the crash frame -> crash, hold the last frame
  *   new run after a crash   getup -> run loop
+ *   Crash from the menu     one run cycle, crash, a few seconds down, then up
+ *                           again (getup -> run -> stop -> idle)
  *
  * Holidays swap the sheet, chosen by the viewer's local date unless they pick
  * one from the menu on the MPACT icon. Only the one sheet in use is fetched.
@@ -44,6 +46,8 @@ let hiddenSince = 0;
 let pressed = false;         // Run clicked, server not answered yet
 let demo = null;             // 'run' then 'fail': a pretend run that crashes
 let demoLeft = 0;            // run frames still to show before it does
+let upAt = 0;                // when a pretend crash gets back up (performance.now())
+const DOWN_FOR = 2500;       // ms a pretend crash stays down
 
 /** Start moving on the click itself rather than on the server's reply. */
 export function dinoPressed(on) {
@@ -51,11 +55,17 @@ export function dinoPressed(on) {
   if (on) demo = null;
 }
 
-/** One run cycle, then a crash that holds until the next real run. */
-export function dinoCrash() {
+/** Whether the menu's Crash can play now: the dinosaur is on screen, standing,
+ * and no run is under way. */
+export function canDinoCrash() {
   const run = store.get('run');
-  if (!meta || !visible() || pressed
-      || (run && (run.state === 'queued' || run.state === 'running'))) return;
+  return Boolean(meta && visible() && !pressed && !demo && clip !== 'down'
+                 && !(run && (run.state === 'queued' || run.state === 'running')));
+}
+
+/** One run cycle, then a crash; it gets back up on its own a little later. */
+export function dinoCrash() {
+  if (!canDinoCrash()) return;
   demo = 'run';
   demoLeft = meta.clips.run.frames.length;
   wake();
@@ -91,7 +101,10 @@ function play(name, next = null, start = 0, from = null) {
 const toIdle = () => play('idle');
 const toRun = () => play('run', null, meta.run_join);
 const toDown = () => {
-  demo = null;   // down is down: from here only a real run gets it up
+  // A pretend crash gets up again after a pause; a failed run stays down until
+  // the next run.
+  upAt = demo === 'fail' ? performance.now() + DOWN_FOR : 0;
+  demo = null;
   play('down');
 };
 
@@ -134,6 +147,10 @@ function step() {
       break;
     case 'down':
       if (want === 'run') play('getup', toRun);
+      else if (upAt && want === 'idle' && performance.now() >= upAt) {
+        upAt = 0;
+        play('getup', toRun);   // then run -> stop -> idle, as the target is idle
+      }
       break;
     default:     // one-shot transitions run to the end, whatever the target
       if (last) after(); else pos += 1;
@@ -264,6 +281,7 @@ export const THEMES = [
   { id: 'july4', label: 'Fourth of July' },
   { id: 'labor', label: 'Labor Day' },
   { id: 'halloween', label: 'Halloween' },
+  { id: 'thanksgiving', label: 'Thanksgiving' },
   { id: 'santa', label: 'Christmas' },
 ];
 
@@ -287,6 +305,12 @@ function laborDay(y) {
   return shift(first, (8 - first.getDay()) % 7);
 }
 
+/** US Thanksgiving: the fourth Thursday of November. */
+function thanksgiving(y) {
+  const first = day(y, 11, 1);
+  return shift(first, (11 - first.getDay()) % 7 + 21);
+}
+
 /** [id, first day, last day] of each holiday's window in year y, inclusive.
  * The first match wins: Mardi Gras can overlap Valentine's week, and takes it;
  * in a year with a late Mardi Gras it takes some of Women's Day week too, but
@@ -294,6 +318,7 @@ function laborDay(y) {
 function windows(y) {
   const sunday = easter(y);
   const labor = laborDay(y);
+  const turkey = thanksgiving(y);
   return [
     ['newyear', day(y - 1, 12, 29), day(y, 1, 2)],
     ['womensday', day(y, 3, 8), day(y, 3, 8)],               // the day itself, whatever else is on
@@ -305,7 +330,8 @@ function windows(y) {
     ['july4', day(y, 6, 27), day(y, 7, 4)],
     ['labor', shift(labor, -3), labor],                      // Friday to Monday
     ['halloween', day(y, 10, 24), day(y, 10, 31)],
-    ['santa', day(y, 12, 11), day(y, 12, 25)],               // the two weeks before Christmas, and the day
+    ['thanksgiving', shift(turkey, -3), turkey],             // Monday to Thursday
+    ['santa', day(y, 12, 4), day(y, 12, 25)],                // the three weeks before Christmas, and the day
     ['newyear', day(y, 12, 29), day(y + 1, 1, 2)],
   ];
 }
@@ -369,6 +395,15 @@ export function toggleDinoMenu(anchor) {
     item.addEventListener('click', () => { setDinoTheme(option.id); closeMenu(); });
     menu.append(item);
   }
+  const crash = document.createElement('button');
+  crash.type = 'button';
+  crash.className = 'dino-menu-action';
+  crash.setAttribute('role', 'menuitem');
+  crash.textContent = 'Crash';
+  crash.disabled = !canDinoCrash();
+  if (crash.disabled) crash.title = 'Only on the Run view, with the dinosaur standing and no run going';
+  crash.addEventListener('click', () => { closeMenu(); dinoCrash(); });
+  menu.append(crash);
   const box = anchor.getBoundingClientRect();
   menu.style.left = `${box.left}px`;
   menu.style.top = `${box.bottom + 6}px`;

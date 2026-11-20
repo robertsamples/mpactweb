@@ -40,6 +40,9 @@ ACCESSORY = {
     'g': (166, 136, 64), 'q': (100, 110, 120), 'C': (172, 154, 104), 'y': (196, 180, 120),
     'Y': (226, 214, 170), 'F': (146, 42, 38), 'n': (100, 86, 70), 'l': (176, 154, 66),
     'G': (72, 112, 66), 'u': (106, 66, 128), 'P': (124, 72, 160),
+    # turkey fan: dark band, and specks a touch off the feather colours and tips
+    'd': (40, 40, 44), 'O': (174, 112, 57), 'J': (184, 155, 83), 'R': (165, 58, 51),
+    'W': (150, 145, 134),
 }
 PALETTE = {**{c: tuple(round(v * DIM) for v in rgb) for c, rgb in ACCESSORY.items()}, **BODY}
 

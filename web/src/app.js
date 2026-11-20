@@ -16,7 +16,7 @@ import { showRunsDialog } from './views/runs.js';
 import { createStatusBar } from './views/statusbar.js';
 import { showLogin } from './views/login.js';
 import { detailsRail } from './views/detailsrail.js';
-import { dinoCrash, toggleDinoMenu } from './views/dino.js';
+import { toggleDinoMenu } from './views/dino.js';
 import { buildAdminView } from './views/admin.js';
 
 const POLL_INTERVAL_MS = 1500;
@@ -338,7 +338,6 @@ async function boot() {
 
   $('#btn-runs').addEventListener('click', showRunsDialog);
   $('.titlebar .app-icon').addEventListener('click', (event) => {
-    dinoCrash();
     toggleDinoMenu(event.currentTarget);
   });
 
